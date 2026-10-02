@@ -227,7 +227,16 @@ impl ApplicationHandler for Host {
         let Some(w) = self.live.as_mut() else { return };
         libgui_winit::push_window_event(&mut w.ui, &event, w.window.scale_factor());
         match event {
-            WindowEvent::CloseRequested => el.exit(),
+            // Not mid-write: the app first stops the job, and closes when it
+            // has (see `about_to_wait`).
+            WindowEvent::CloseRequested => {
+                if self.app.request_close() {
+                    el.exit();
+                } else {
+                    w.ui.request_repaint();
+                    w.window.request_redraw();
+                }
+            }
             WindowEvent::ThemeChanged(t) => {
                 self.app.set_system_dark(t == OsTheme::Dark);
                 w.ui.request_repaint();
@@ -252,6 +261,10 @@ impl ApplicationHandler for Host {
         // background threads with no input event to wake us: look for them.
         if self.app.tick() {
             w.ui.request_repaint();
+        }
+        if self.app.should_close() {
+            el.exit();
+            return;
         }
         let elapsed = w.idle + w.last.elapsed().as_secs_f32();
         if self.app.busy() || w.ui.needs_frame(elapsed) {

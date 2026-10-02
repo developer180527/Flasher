@@ -299,12 +299,18 @@ fn write(
     watch.stop();
     let written = result?;
     drop(raw);
-    platform.eject(&device)?;
     eprintln!(
-        "\r\x1b[2Kdone: {} written{}, drive ejected",
+        "\r\x1b[2Kdone: {} written{}",
         human_size(written),
         if verify { " and verified" } else { "" }
     );
+    // The image is on the drive: a failed eject is not a failed write.
+    match platform.eject(&device) {
+        Ok(()) => eprintln!("drive ejected; it is safe to remove"),
+        Err(e) => eprintln!(
+            "warning: could not eject the drive ({e}); eject it from the system before unplugging it"
+        ),
+    }
     Ok(())
 }
 

@@ -155,6 +155,9 @@ pub struct App {
     /// Where each named control was drawn last frame, so a headless driver can
     /// click it exactly as a user would. See `headless.rs`.
     pub controls: Vec<(&'static str, Rect)>,
+    /// The window was asked to close while a job ran: it closes when the
+    /// job ends (see [`App::request_close`]).
+    closing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,7 +171,8 @@ enum Stage {
     /// A button was pressed whose action erases a drive; waiting for "yes".
     Confirm(Task),
     Running(Job),
-    Finished(Result<String, String>),
+    /// How the job ended, and something to know even though it worked.
+    Finished(Result<String, String>, Option<String>),
 }
 
 struct Job {
@@ -188,7 +192,8 @@ struct Job {
 
 enum Msg {
     Progress(Progress),
-    Done(Result<String, String>),
+    /// The outcome, and a warning to show alongside a success.
+    Done(Result<String, String>, Option<String>),
 }
 
 impl App {
@@ -222,6 +227,7 @@ impl App {
             last_image_dir: None,
             store: None,
             controls: Vec::new(),
+            closing: false,
         };
         app.refresh();
         app.set_auto_refresh(true);
@@ -248,9 +254,44 @@ impl App {
     /// What the last job ended with, once it has ended.
     pub fn outcome(&self) -> Option<&Result<String, String>> {
         match &self.stage {
-            Stage::Finished(r) => Some(r),
+            Stage::Finished(r, _) => Some(r),
             _ => None,
         }
+    }
+
+    /// A warning that came with the last job's outcome: the drive was
+    /// written, but could not be ejected.
+    pub fn outcome_warning(&self) -> Option<&str> {
+        match &self.stage {
+            Stage::Finished(_, w) => w.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The host calls this when the user closes the window. Returns whether
+    /// it may close now.
+    ///
+    /// Closing mid-job would kill the worker part-way through a write and
+    /// leave the drive half-written, so the first request cancels a flash
+    /// (a restore is one OS command and runs to its end) and the window
+    /// closes once the job has stopped: see [`App::should_close`]. A second
+    /// request closes at once — for a drive that has stopped responding,
+    /// whose job may never end.
+    pub fn request_close(&mut self) -> bool {
+        let Stage::Running(job) = &self.stage else {
+            return true;
+        };
+        if self.closing {
+            return true;
+        }
+        self.closing = true;
+        job.cancel.store(true, Ordering::Relaxed);
+        false
+    }
+
+    /// A close was put off until the job ended, and it has.
+    pub fn should_close(&self) -> bool {
+        self.closing && !self.busy()
     }
 
     pub fn devices(&self) -> &[DeviceInfo] {
@@ -481,9 +522,10 @@ impl App {
                             &mut send,
                         )?;
                         drop(raw);
-                        if settings.eject {
-                            platform.eject(&device)?;
-                        }
+                        // The image is on the drive by now: failing to eject
+                        // (macOS reporting a just-mounted volume busy, say)
+                        // is a warning, not a failed flash.
+                        let ejected = settings.eject.then(|| platform.eject(&device));
                         let mut done = format!("Done: {} written", human_size(n));
                         if settings.verify {
                             done += " and verified";
@@ -491,14 +533,24 @@ impl App {
                         if expected.is_some() {
                             done += "; the image matched its published SHA-256";
                         }
-                        done += if settings.eject {
+                        done += if matches!(ejected, Some(Ok(()))) {
                             ". It is safe to remove the drive."
                         } else {
                             "."
                         };
-                        Ok::<_, libflasher::Error>(done)
+                        let warning = match ejected {
+                            Some(Err(e)) => Some(format!(
+                                "The drive could not be ejected ({e}). Eject it from the system before unplugging it."
+                            )),
+                            _ => None,
+                        };
+                        Ok::<_, libflasher::Error>((done, warning))
                     })();
-                    let _ = tx.send(Msg::Done(result.map_err(|e| e.to_string())));
+                    let (result, warning) = match result {
+                        Ok((done, warning)) => (Ok(done), warning),
+                        Err(e) => (Err(e.to_string()), None),
+                    };
+                    let _ = tx.send(Msg::Done(result, warning));
                 });
             }
             Task::Restore => {
@@ -515,7 +567,7 @@ impl App {
                             label.trim()
                         ))
                     })();
-                    let _ = tx.send(Msg::Done(result.map_err(|e| e.to_string())));
+                    let _ = tx.send(Msg::Done(result.map_err(|e| e.to_string()), None));
                 });
             }
         }
@@ -545,15 +597,15 @@ impl App {
                     job.heard = true;
                     job.status.update(p);
                 }
-                Ok(Msg::Done(r)) => {
-                    self.stage = Stage::Finished(r);
+                Ok(Msg::Done(r, warning)) => {
+                    self.stage = Stage::Finished(r, warning);
                     self.refresh();
                     return true;
                 }
                 Err(TryRecvError::Empty) => return any,
                 Err(TryRecvError::Disconnected) => {
                     self.stage =
-                        Stage::Finished(Err("the worker thread stopped unexpectedly".into()));
+                        Stage::Finished(Err("the worker thread stopped unexpectedly".into()), None);
                     return true;
                 }
             }
@@ -917,6 +969,15 @@ impl App {
                         ),
                     );
                 }
+                if self.closing {
+                    warning(
+                        ui,
+                        match job.task {
+                            Task::Flash => "Stopping the write; the window closes when it has stopped. Close it again to quit at once and leave the drive half-written.",
+                            Task::Restore => "The window closes when the drive is finished. Close it again to quit at once and leave the drive unusable.",
+                        },
+                    );
+                }
                 // Restoring is one OS command; there is nothing safe to stop.
                 if job.task == Task::Flash {
                     let stopping = job.cancel.load(Ordering::Relaxed);
@@ -931,13 +992,16 @@ impl App {
                     });
                 }
             }
-            Stage::Finished(result) => {
+            Stage::Finished(result, note) => {
                 match result {
                     Ok(msg) => {
                         let size = ui.theme.metrics.font_size;
                         ui.paragraph_with(msg, size, success_color(dark), Align::Start);
                     }
                     Err(e) => error(ui, e),
+                }
+                if let Some(note) = note {
+                    warning(ui, note);
                 }
                 button_row(ui, "finished", |ui| {
                     let r = ui.button_primary("OK");

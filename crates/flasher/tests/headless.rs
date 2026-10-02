@@ -650,3 +650,93 @@ fn a_plain_iso_without_uefi_is_refused_before_flashing() {
     );
     assert!(std::fs::read(&drive).unwrap().iter().all(|&b| b == 0xEE));
 }
+
+// ---- closing the window, ejecting ---------------------------------------
+
+/// Starts a flash long enough (a slow drive) to act on while it runs.
+fn flash_in_progress(f: &Fixture) -> Headless {
+    f.drive("slow-stick", 64 * MB);
+    let (img, _) = f.image("distro.iso", 32 * MB, true);
+    let mut h = f.app();
+    h.drop_file(&img);
+    h.click("flash").unwrap();
+    h.click("confirm").unwrap();
+    wait_for(&mut h, "the write to start", |h| h.app.progress_started());
+    h
+}
+
+#[test]
+fn closing_when_idle_closes_at_once() {
+    let f = Fixture::new("close_idle");
+    f.drive("stick", 8 * MB);
+    let mut h = f.app();
+    assert!(h.app.request_close());
+}
+
+#[test]
+fn closing_mid_write_stops_the_write_before_closing() {
+    let f = Fixture::new("close_busy");
+    let mut h = flash_in_progress(&f);
+    assert!(!h.app.request_close(), "closed with a write in progress");
+    assert!(!h.app.should_close(), "closing before the write stopped");
+    snap(&mut h, "closing");
+    h.wait_until_idle(Duration::from_secs(30)).unwrap();
+    assert!(h.app.should_close(), "did not close once the write stopped");
+    let outcome = h.app.outcome().unwrap();
+    assert!(
+        outcome.as_ref().is_err_and(|e| e.contains("cancelled")),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn closing_twice_closes_without_waiting() {
+    let f = Fixture::new("close_twice");
+    let mut h = flash_in_progress(&f);
+    assert!(!h.app.request_close());
+    assert!(h.app.request_close(), "a second close should not wait");
+    h.wait_until_idle(Duration::from_secs(30)).unwrap();
+}
+
+/// Mock drives whose eject always fails, as macOS's does while a volume
+/// it has just mounted is busy.
+struct EjectFails(MockPlatform);
+
+impl libflasher::Platform for EjectFails {
+    fn name(&self) -> &'static str {
+        "mock, eject fails"
+    }
+    fn list_devices(&self) -> libflasher::Result<Vec<libflasher::DeviceInfo>> {
+        self.0.list_devices()
+    }
+    fn open_device(
+        &self,
+        device: &libflasher::DeviceInfo,
+    ) -> libflasher::Result<Box<dyn libflasher::RawDevice>> {
+        self.0.open_device(device)
+    }
+    fn eject(&self, _device: &libflasher::DeviceInfo) -> libflasher::Result<()> {
+        Err(std::io::Error::other("the disk is busy").into())
+    }
+}
+
+#[test]
+fn a_failed_eject_is_a_warning_on_a_successful_flash() {
+    let f = Fixture::new("eject_fails");
+    let drive = f.drive("stick", 8 * MB);
+    let (img, bytes) = f.image("distro.iso", MB, true);
+    let mut h = Headless::new(Arc::new(EjectFails(MockPlatform::new(&f.dir))));
+    h.drop_file(&img);
+    flash_through_ui(&mut h);
+    snap(&mut h, "eject-failed");
+    let outcome = h.app.outcome().unwrap();
+    assert!(
+        outcome
+            .as_ref()
+            .is_ok_and(|m| m.contains("verified") && !m.contains("safe to remove")),
+        "{outcome:?}"
+    );
+    let warning = h.app.outcome_warning().expect("a warning about ejecting");
+    assert!(warning.contains("the disk is busy"), "{warning}");
+    assert_eq!(&std::fs::read(&drive).unwrap()[..bytes.len()], &bytes[..]);
+}
