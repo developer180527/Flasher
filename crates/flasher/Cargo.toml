@@ -14,6 +14,12 @@ name = "flasher"
 path = "src/main.rs"
 doc = false
 
+# Linux only: started through pkexec to open a disk for writing.
+[[bin]]
+name = "libflasher-helper"
+path = "src/bin/libflasher-helper.rs"
+doc = false
+
 [dependencies]
 libflasher.workspace = true
 flasher_cli.workspace = true

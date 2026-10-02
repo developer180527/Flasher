@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Install to /usr/share/polkit-1/actions/ alongside the helper at
+  /usr/libexec/libflasher-helper. pkexec works without this file, but then
+  asks with a generic "run as the super user" message; with it, the prompt
+  says what is about to happen. Administrators must authenticate every time
+  (no remembered authorization): each use erases a drive.
+-->
+<policyconfig>
+  <vendor>Flasher</vendor>
+  <vendor_url>https://github.com/developer180527/Flasher</vendor_url>
+  <action id="io.github.developer180527.flasher.write-disk">
+    <description>Write a disk image to a USB drive or SD card</description>
+    <message>Flasher needs your password to erase and write the selected drive</message>
+    <icon_name>drive-removable-media</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/libflasher-helper</annotate>
+  </action>
+</policyconfig>
