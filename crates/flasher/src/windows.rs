@@ -26,6 +26,21 @@ use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SHELLEXEC
 /// if elevation silently does not happen).
 pub const RELAUNCHED: &str = "--elevated-relaunch";
 
+/// A blocking error dialog: the window app has no console to print to.
+pub fn error_box(title: &str, text: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    let (title, text) = (wide(OsStr::new(title)), wide(OsStr::new(text)));
+    // SAFETY: both strings are NUL-terminated and outlive the call.
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        )
+    };
+}
+
 /// Send terminal output to the console the command was typed in.
 pub fn attach_console() {
     // SAFETY: plain Win32 call; failing (no parent console) is harmless.

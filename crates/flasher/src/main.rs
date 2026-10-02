@@ -93,14 +93,32 @@ impl Host {
             Box::new(el.owned_display_handle()),
         ));
         let surface = instance.create_surface(window.clone()).expect("surface");
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: Some(&surface),
+        // The integrated GPU first, then any GPU, then the OS's software
+        // renderer (WARP on Windows), so a PC with a missing or broken
+        // graphics driver still gets a window rather than a crash.
+        let adapter = [
+            (wgpu::PowerPreference::LowPower, false),
+            (wgpu::PowerPreference::HighPerformance, false),
+            (wgpu::PowerPreference::None, true),
+        ]
+        .into_iter()
+        .find_map(|(power_preference, force_fallback_adapter)| {
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference,
+                force_fallback_adapter,
+                compatible_surface: Some(&surface),
+                ..Default::default()
+            }))
+            .ok()
+        })
+        .expect("no graphics adapter could draw the window, not even a software one");
+        // The UI needs little: ask for no more than older GPUs give, at the
+        // largest texture size this one supports.
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
             ..Default::default()
         }))
-        .expect("no GPU adapter");
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&Default::default())).expect("device");
+        .expect("the graphics adapter refused to start");
 
         let px = window.inner_size();
         let mut config = surface
@@ -256,6 +274,36 @@ impl Host {
     }
 }
 
+/// The window app has no terminal to print a panic to: keep it in
+/// `crash.log` beside the settings, and on Windows say so in a dialog,
+/// instead of the window just vanishing.
+fn report_crashes() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default(info);
+        let log = flasher::prefs::PrefsStore::default_location()
+            .map(|s| s.path().with_file_name("crash.log"));
+        let mut text = format!("Flasher {} stopped: {info}", env!("CARGO_PKG_VERSION"));
+        if let Some(log) = &log {
+            if let Some(dir) = log.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if std::fs::write(log, &text).is_ok() {
+                text += &format!("\n\nSaved in {}", log.display());
+            }
+        }
+        text += "\n\nPlease report it: https://github.com/developer180527/Flasher/issues";
+        // A worker thread's panic is reported by the app itself; only the
+        // window's own thread ending means the app is gone.
+        #[cfg(windows)]
+        if std::thread::current().name() == Some("main") {
+            windows::error_box("Flasher", &text);
+        }
+        #[cfg(not(windows))]
+        let _ = text;
+    }));
+}
+
 /// Flasher's icon for the title bar and taskbar, from the PNG in assets.
 #[cfg(not(target_os = "macos"))]
 fn window_icon() -> Option<winit::window::Icon> {
@@ -389,6 +437,7 @@ fn main() -> ExitCode {
     if !relaunched && !windows::is_elevated() && windows::relaunch_elevated() {
         return ExitCode::SUCCESS;
     }
+    report_crashes();
     let el = EventLoop::new().expect("event loop");
     #[cfg(target_os = "macos")]
     if !macos::guard_quit() {
