@@ -1,0 +1,4 @@
+# Build Flasher against a local libflasher checkout instead of the commit
+# pinned in Cargo.toml. Copy to .cargo/config.toml (which git ignores).
+[patch."https://github.com/developer180527/libflasher"]
+libflasher = { path = "../libflasher/crates/libflasher" }

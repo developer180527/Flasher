@@ -1,5 +1,9 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! The window: one winit window, one wgpu surface, one libgui `Ui`.
 //! Adapted from libgui's `libgui_pad` host.
+
+#[cfg(windows)]
+mod windows;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -275,12 +279,26 @@ impl ApplicationHandler for Host {
 fn main() -> ExitCode {
     // A command means the terminal; none means the window. (Old macOS adds a
     // `-psn_…` argument when an app is opened from the Finder: not a command.)
-    let args: Vec<String> = std::env::args()
+    // Mutable only on Windows, which strips the relaunch marker below.
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut args: Vec<String> = std::env::args()
         .skip(1)
         .filter(|a| !a.starts_with("-psn_"))
         .collect();
+    #[cfg(windows)]
+    let relaunched = {
+        let before = args.len();
+        args.retain(|a| a != windows::RELAUNCHED);
+        args.len() != before
+    };
     if !args.is_empty() {
+        #[cfg(windows)]
+        windows::attach_console();
         return flasher_cli::run(args);
+    }
+    #[cfg(windows)]
+    if !relaunched && !windows::is_elevated() && windows::relaunch_elevated() {
+        return ExitCode::SUCCESS;
     }
     let el = EventLoop::new().expect("event loop");
     let mut host = Host {

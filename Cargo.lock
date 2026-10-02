@@ -830,6 +830,7 @@ dependencies = [
  "serde",
  "toml",
  "wgpu",
+ "windows-sys 0.59.0",
  "winit",
 ]
 
@@ -1362,6 +1363,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 [[package]]
 name = "libflasher"
 version = "0.1.0"
+source = "git+https://github.com/developer180527/libflasher?rev=7f6b5dc2253c5df55117255e034571e1a2291a50#7f6b5dc2253c5df55117255e034571e1a2291a50"
 dependencies = [
  "libflasher_core",
  "libflasher_platform",
@@ -1370,6 +1372,7 @@ dependencies = [
 [[package]]
 name = "libflasher_core"
 version = "0.1.0"
+source = "git+https://github.com/developer180527/libflasher?rev=7f6b5dc2253c5df55117255e034571e1a2291a50#7f6b5dc2253c5df55117255e034571e1a2291a50"
 dependencies = [
  "bzip2",
  "crc32fast",
@@ -1384,6 +1387,7 @@ dependencies = [
 [[package]]
 name = "libflasher_linux"
 version = "0.1.0"
+source = "git+https://github.com/developer180527/libflasher?rev=7f6b5dc2253c5df55117255e034571e1a2291a50#7f6b5dc2253c5df55117255e034571e1a2291a50"
 dependencies = [
  "libc",
  "libflasher_core",
@@ -1392,6 +1396,7 @@ dependencies = [
 [[package]]
 name = "libflasher_macos"
 version = "0.1.0"
+source = "git+https://github.com/developer180527/libflasher?rev=7f6b5dc2253c5df55117255e034571e1a2291a50#7f6b5dc2253c5df55117255e034571e1a2291a50"
 dependencies = [
  "libc",
  "libflasher_core",
@@ -1401,6 +1406,7 @@ dependencies = [
 [[package]]
 name = "libflasher_platform"
 version = "0.1.0"
+source = "git+https://github.com/developer180527/libflasher?rev=7f6b5dc2253c5df55117255e034571e1a2291a50#7f6b5dc2253c5df55117255e034571e1a2291a50"
 dependencies = [
  "libflasher_core",
  "libflasher_linux",
@@ -1411,6 +1417,7 @@ dependencies = [
 [[package]]
 name = "libflasher_windows"
 version = "0.1.0"
+source = "git+https://github.com/developer180527/libflasher?rev=7f6b5dc2253c5df55117255e034571e1a2291a50#7f6b5dc2253c5df55117255e034571e1a2291a50"
 dependencies = [
  "libflasher_core",
  "windows-sys 0.59.0",

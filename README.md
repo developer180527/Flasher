@@ -21,10 +21,12 @@ and [libgui](https://github.com/developer180527/libgui).
 
 ## Building
 
-Flasher expects a libflasher checkout next to it:
-
 ```
-git clone https://github.com/developer180527/libflasher
 git clone https://github.com/developer180527/Flasher
 cd Flasher && cargo run --release
 ```
+
+Flasher uses the libflasher commit pinned in `Cargo.toml`. To work on both
+at once, clone libflasher next to Flasher and copy
+`.cargo/config.toml.example` to `.cargo/config.toml`; run
+`scripts/relock.sh` before committing so `Cargo.lock` keeps the pin.

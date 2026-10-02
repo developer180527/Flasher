@@ -30,3 +30,13 @@ arboard = { version = "3", default-features = false }
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+] }
