@@ -1,0 +1,7 @@
+# Flasher, light. Only what differs from libgui's light preset.
+name = "Flasher Light"
+extends = "light"
+
+[palette]
+# Unselected tabs a step darker than the page, so the open one stands out.
+bg_inset = "mix(bg_app, border, 0.25)"

@@ -1,0 +1,59 @@
+# Flasher's GUI is tested headless (no window, GPU or drive: libgui's CPU
+# renderer and libflasher's file-backed mock drives) on all three platforms.
+# The disk backends themselves are tested in libflasher's CI.
+#
+# Flasher builds against a sibling libflasher checkout. Pushes and pull
+# requests use libflasher's main branch; a weekly run catches libflasher
+# changes that break the app before anyone ships them.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Flasher
+      - uses: actions/checkout@v4
+        with:
+          repository: developer180527/libflasher
+          path: libflasher
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Flasher
+      - name: rustfmt
+        working-directory: Flasher
+        run: cargo fmt --all --check
+      - name: clippy
+        working-directory: Flasher
+        run: cargo clippy --workspace --all-targets
+      - name: test
+        working-directory: Flasher
+        run: cargo test --workspace
+      - name: snapshots
+        # The headless GUI tests render screenshots; keep them for review.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshots-${{ matrix.os }}
+          path: Flasher/target/snapshots/
+          if-no-files-found: ignore

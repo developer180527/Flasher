@@ -1,0 +1,10 @@
+[package]
+name = "flasher_cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Flasher's terminal commands: list, inspect, write, verify, restore."
+
+[dependencies]
+libflasher.workspace = true

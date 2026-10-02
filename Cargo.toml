@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["crates/flasher", "crates/flasher_cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Venu Gopal"]
+rust-version = "1.90"
+repository = "https://github.com/developer180527/Flasher"
+
+[workspace.dependencies]
+flasher_cli = { path = "crates/flasher_cli" }
+# The engine. A sibling checkout while both are developed together; switch to
+# `{ git = "https://github.com/developer180527/libflasher", tag = "v0.1.0" }`
+# or the crates.io release when libflasher is published.
+libflasher = { path = "../libflasher/crates/libflasher" }
+
+# libgui, pinned to a pushed commit. To develop libgui alongside this app,
+# replace these with `path = "../libgui/crates/..."`.
+libgui        = { git = "https://github.com/developer180527/libgui", rev = "28507e087e00694e281570080208f65266d3a03c" }
+libgui_keymap = { git = "https://github.com/developer180527/libgui", rev = "28507e087e00694e281570080208f65266d3a03c" }
+libgui_wgpu   = { git = "https://github.com/developer180527/libgui", rev = "28507e087e00694e281570080208f65266d3a03c" }
+libgui_soft   = { git = "https://github.com/developer180527/libgui", rev = "28507e087e00694e281570080208f65266d3a03c" }
+libgui_winit  = { git = "https://github.com/developer180527/libgui", rev = "28507e087e00694e281570080208f65266d3a03c" }
+wgpu = "30"
+winit = "0.30"
+pollster = "1"
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,0 +1,8 @@
+# Flasher, dark. Only what differs from libgui's dark preset; every other
+# value comes from it. Keys: see libgui's themes/_exported.toml.
+name = "Flasher Dark"
+extends = "dark"
+
+[palette]
+# Unselected tabs a step darker than the page, so the open one stands out.
+bg_inset = "mix(bg_app, bg_panel, 0.35)"

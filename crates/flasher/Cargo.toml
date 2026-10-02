@@ -1,0 +1,32 @@
+[package]
+name = "flasher"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Flasher: write disk images to USB drives and SD cards, in a window or the terminal."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "flasher"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+libflasher.workspace = true
+flasher_cli.workspace = true
+libgui.workspace = true
+libgui_keymap.workspace = true
+libgui_wgpu.workspace = true
+libgui_winit.workspace = true
+libgui_soft.workspace = true
+png = "0.18"
+wgpu.workspace = true
+winit.workspace = true
+pollster.workspace = true
+arboard = { version = "3", default-features = false }
+rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
