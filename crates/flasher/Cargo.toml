@@ -5,6 +5,8 @@ edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 description = "Flasher: write disk images to USB drives and SD cards, in a window or the terminal."
+# `cargo run` opens the app; the Linux helper is a second binary.
+default-run = "flasher"
 
 [lib]
 path = "src/lib.rs"

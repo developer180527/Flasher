@@ -7,8 +7,12 @@ mod macos;
 #[cfg(windows)]
 mod windows;
 
+use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
 use flasher::App;
@@ -16,7 +20,7 @@ use libgui::*;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Theme as OsTheme, Window, WindowId};
 
 const FONT: &[u8] = include_bytes!("../../../assets/Inter.ttf");
@@ -44,6 +48,20 @@ struct Host {
     live: Option<Live>,
     app: App,
     clipboard: Option<arboard::Clipboard>,
+    /// The open Browse… dialog: what it will pick, polled between events.
+    browse: Option<Pin<Box<dyn Future<Output = Option<PathBuf>> + Send>>>,
+    /// Wakes the event loop when the dialog finishes.
+    waker: Waker,
+}
+
+/// A `Waker` that wakes the event loop, so a finished dialog is noticed
+/// even while the loop sleeps waiting for input.
+struct WakeLoop(EventLoopProxy<()>);
+
+impl Wake for WakeLoop {
+    fn wake(self: Arc<Self>) {
+        let _ = self.0.send_event(());
+    }
 }
 
 impl Host {
@@ -196,9 +214,13 @@ impl Host {
             }
         }
 
-        // Native dialogs are the host's job; run them between frames.
-        if std::mem::take(&mut self.app.want_browse) {
-            let mut dialog = rfd::FileDialog::new();
+        // Native dialogs are the host's job. Never a blocking one here: this
+        // runs inside winit's event handler, and on macOS a modal dialog's
+        // run loop delivers winit events into it, which winit aborts on. The
+        // asynchronous dialog (a sheet on macOS) leaves the loop running;
+        // `about_to_wait` collects the answer.
+        if std::mem::take(&mut self.app.want_browse) && self.browse.is_none() {
+            let mut dialog = rfd::AsyncFileDialog::new();
             if let Some(dir) = self.app.last_image_dir() {
                 dialog = dialog.set_directory(dir);
             }
@@ -210,10 +232,9 @@ impl Host {
                 .add_filter("All files", &["*"])
                 .set_parent(&*w.window)
                 .pick_file();
-            if let Some(path) = picked {
-                self.app.set_image(&path);
-            }
-            w.window.request_redraw();
+            self.browse = Some(Box::pin(async move {
+                picked.await.map(|f| f.path().to_path_buf())
+            }));
         }
     }
 }
@@ -263,6 +284,17 @@ impl ApplicationHandler for Host {
         // background threads with no input event to wake us: look for them.
         if self.app.tick() {
             w.ui.request_repaint();
+        }
+        if let Some(dialog) = self.browse.as_mut() {
+            if let Poll::Ready(picked) = dialog.as_mut().poll(&mut Context::from_waker(&self.waker))
+            {
+                self.browse = None;
+                if let Some(path) = picked {
+                    self.app.set_image(&path);
+                }
+                w.ui.request_repaint();
+                w.window.request_redraw();
+            }
         }
         // ⌘Q, the Dock's Quit, logging out: a close request like any other.
         #[cfg(target_os = "macos")]
@@ -329,7 +361,10 @@ fn main() -> ExitCode {
     if !macos::guard_quit() {
         eprintln!("flasher: could not guard Quit; quitting during a write will stop it");
     }
+    let waker = Waker::from(Arc::new(WakeLoop(el.create_proxy())));
     let mut host = Host {
+        browse: None,
+        waker,
         live: None,
         app: match flasher::prefs::PrefsStore::default_location() {
             Some(store) => App::with_store(libflasher::current_platform(), store),
