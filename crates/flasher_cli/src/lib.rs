@@ -202,13 +202,18 @@ fn inspect(path: &str) -> libflasher::Result<()> {
     }
     if i.kind.needs_extract() {
         match libflasher::extract::plan(&i) {
-            Ok(p) => println!(
-                "  extract:     {} files, {}, needs {} on the drive, volume \"{}\"",
-                p.files,
-                human_size(p.bytes),
-                human_size(p.needs),
-                p.label
-            ),
+            Ok(p) => {
+                println!(
+                    "  extract:     {} files, {}, needs {} on the drive, volume \"{}\"",
+                    p.files,
+                    human_size(p.bytes),
+                    human_size(p.needs),
+                    p.label
+                );
+                if let Some(n) = p.wim_parts {
+                    println!("  install.wim: over FAT32's 4 GB limit; split into {n} .swm parts");
+                }
+            }
             Err(e) => println!("  extract:     not possible: {e}"),
         }
     }

@@ -710,12 +710,18 @@ impl App {
                 match &self.extract_plan {
                     None if i.kind.raw_writable() => ui.label_muted(&line),
                     None => error(ui, &line),
-                    Some(Ok(p)) => ui.label_muted(&format!(
-                        "{line} · {} files, {} · volume \"{}\"",
-                        p.files,
-                        human_size(p.bytes),
-                        p.label
-                    )),
+                    Some(Ok(p)) => {
+                        let split = p
+                            .wim_parts
+                            .map(|n| format!(" · install.wim split into {n} parts for FAT32"))
+                            .unwrap_or_default();
+                        ui.label_muted(&format!(
+                            "{line} · {} files, {} · volume \"{}\"{split}",
+                            p.files,
+                            human_size(p.bytes),
+                            p.label
+                        ))
+                    }
                     Some(Err(e)) => {
                         ui.label_muted(&line);
                         error(ui, &format!("Cannot extract this ISO: {e}."));
