@@ -15,7 +15,7 @@ flasher_cli = { path = "crates/flasher_cli" }
 # until this line is changed on purpose. To develop both together, point it
 # at a local checkout without touching this file: copy
 # `.cargo/config.toml.example` to `.cargo/config.toml` (untracked).
-libflasher = { git = "https://github.com/developer180527/libflasher", rev = "8758c55d9638ac689eb22d1e827e558e6d2e953b" }
+libflasher = { git = "https://github.com/developer180527/libflasher", rev = "49a828d84bf40d3affca8369fdeaa2728f89be57" }
 
 # libgui, pinned to a pushed commit. To develop libgui alongside this app,
 # replace these with `path = "../libgui/crates/..."`.

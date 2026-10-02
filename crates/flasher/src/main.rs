@@ -2,6 +2,8 @@
 //! The window: one winit window, one wgpu surface, one libgui `Ui`.
 //! Adapted from libgui's `libgui_pad` host.
 
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(windows)]
 mod windows;
 
@@ -262,6 +264,15 @@ impl ApplicationHandler for Host {
         if self.app.tick() {
             w.ui.request_repaint();
         }
+        // ⌘Q, the Dock's Quit, logging out: a close request like any other.
+        #[cfg(target_os = "macos")]
+        {
+            macos::set_busy(self.app.busy());
+            if macos::take_quit_request() && self.app.request_close() {
+                el.exit();
+                return;
+            }
+        }
         if self.app.should_close() {
             el.exit();
             return;
@@ -314,6 +325,10 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let el = EventLoop::new().expect("event loop");
+    #[cfg(target_os = "macos")]
+    if !macos::guard_quit() {
+        eprintln!("flasher: could not guard Quit; quitting during a write will stop it");
+    }
     let mut host = Host {
         live: None,
         app: match flasher::prefs::PrefsStore::default_location() {

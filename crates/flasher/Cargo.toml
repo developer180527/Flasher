@@ -37,6 +37,10 @@ rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Already in the tree through winit/wgpu; used to guard Quit (src/macos.rs).
+objc2 = "0.6"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
