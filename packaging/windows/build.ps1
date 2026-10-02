@@ -18,6 +18,10 @@ Set-Location (Join-Path $PSScriptRoot '..\..')
 $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"$' |
     Select-Object -First 1).Matches[0].Groups[1].Value
 
+# The C runtime goes inside flasher.exe, so it runs on PCs without the
+# Visual C++ Redistributable (otherwise: "VCRUNTIME140.dll was not found").
+$env:RUSTFLAGS = "$env:RUSTFLAGS -C target-feature=+crt-static".Trim()
+
 $cargoFlags = @()
 if ($env:CARGO_FLAGS) { $cargoFlags = $env:CARGO_FLAGS -split '\s+' }
 cargo build --release @cargoFlags -p flasher --bin flasher
