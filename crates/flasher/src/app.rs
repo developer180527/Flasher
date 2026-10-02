@@ -31,9 +31,17 @@ const TAB_OPTIONS: usize = 2;
 /// Names of the tabs for `controls`, in order.
 const TAB_CONTROLS: [&str; 3] = ["tab:flash", "tab:restore", "tab:options"];
 
-/// How often the drive list is re-read. Polling, until the platforms grow
-/// native notifications (DiskArbitration, udev); a listing costs a few ms.
+/// How often the drive list is re-read where the platform cannot notify us
+/// of drives coming and going.
 pub const DEVICE_POLL: Duration = Duration::from_secs(2);
+
+/// Where it can, the list is re-read when notified, and also this often in
+/// case a notification is ever missed.
+const SAFETY_POLL: Duration = Duration::from_secs(30);
+
+/// One plug-in raises several notifications (the disk, then each partition);
+/// wait this long for the burst to end and list once.
+const SETTLE: Duration = Duration::from_millis(150);
 
 /// Silence after which the UI says the drive may have stopped responding.
 const QUIET_WARNING: Duration = Duration::from_secs(10);
@@ -347,11 +355,26 @@ impl App {
         }
         let (tx, rx) = mpsc::channel();
         let platform = self.platform.clone();
-        let every = self.poll_every;
+        // Native notifications (DiskArbitration, uevents, Configuration
+        // Manager) where the platform has them; polling where it does not.
+        let (ping, pinged) = mpsc::channel::<()>();
+        let watch = platform.watch(Arc::new(move || {
+            let _ = ping.send(());
+        }));
+        let every = if watch.is_some() {
+            SAFETY_POLL
+        } else {
+            self.poll_every
+        };
         thread::spawn(move || {
+            // Owned here, so notifications stop when this thread does.
+            let _watch = watch;
             let mut last: Option<Result<Vec<DeviceInfo>, String>> = None;
             loop {
-                thread::sleep(every);
+                if pinged.recv_timeout(every).is_ok() {
+                    thread::sleep(SETTLE);
+                    while pinged.try_recv().is_ok() {}
+                }
                 let now = platform.list_devices().map_err(|e| e.to_string());
                 if last.as_ref() != Some(&now) {
                     if tx.send(now.clone()).is_err() {
