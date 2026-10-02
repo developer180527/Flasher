@@ -1,0 +1,159 @@
+# Builds Flasher's packages on each platform:
+#   macOS    universal .dmg                      packaging/macos/package.sh
+#   Windows  installer + portable .zip           packaging/windows/build.ps1
+#   Linux    .deb, AppImage, .tar.gz, x86_64 and aarch64
+#                                                packaging/linux/package.sh
+# Run by hand (Actions → Release → Run workflow) for packages to try, kept
+# as the run's artifacts; or by pushing a tag `v<version>` matching
+# Cargo.toml, which also drafts a GitHub release with every package and a
+# SHA256SUMS (which Flasher itself picks up). Drafts are published by hand.
+#
+# Linux packages are built on Ubuntu 22.04 so they run on glibc 2.35 and
+# newer (Debian 12, Ubuntu 22.04 onwards).
+#
+# macOS signing, optional: with the secrets below set, the app is signed
+# with a Developer ID and the disk image notarized; without them it is
+# signed ad hoc (users right-click → Open the first time).
+#   MACOS_CERTIFICATE_P12        base64 of the Developer ID Application .p12
+#   MACOS_CERTIFICATE_PASSWORD   its password
+#   MACOS_SIGN_IDENTITY          "Developer ID Application: Name (TEAMID)"
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   for notarytool
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_FLAGS: --locked
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml's version $version" >&2
+            exit 1
+          fi
+      - run: scripts/check-lock.sh
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    env:
+      SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: import the signing certificate
+        if: env.SIGNING == 'true'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          keychain=$RUNNER_TEMP/signing.keychain-db
+          password=$(uuidgen)
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          if [ -n "$APPLE_ID" ]; then
+            xcrun notarytool store-credentials flasher-notary --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --keychain "$keychain"
+            echo "NOTARY_PROFILE=flasher-notary" >> "$GITHUB_ENV"
+          fi
+          echo "APPLE_SIGN_IDENTITY=${{ secrets.MACOS_SIGN_IDENTITY }}" >> "$GITHUB_ENV"
+      - run: packaging/macos/package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flasher-macos
+          path: target/dist/*
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+      - run: packaging\windows\build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flasher-windows
+          path: target/dist/*
+          if-no-files-found: error
+
+  linux:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: packaging/linux/package.sh
+      - name: the .deb installs, and its terminal commands run
+        run: |
+          sudo apt-get install -y --no-install-recommends ./target/dist/flasher_*.deb
+          flasher --help
+          flasher list
+          test -x /usr/libexec/libflasher-helper
+          sudo apt-get remove -y flasher
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flasher-linux-${{ matrix.arch }}
+          path: target/dist/*
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [version, macos, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --draft --title "Flasher ${{ needs.version.outputs.version }}" --generate-notes

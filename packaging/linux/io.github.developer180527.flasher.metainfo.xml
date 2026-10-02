@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata: what software centres show for Flasher. -->
+<component type="desktop-application">
+  <id>io.github.developer180527.flasher</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>Flasher</name>
+  <summary>Write disk images to USB drives and SD cards</summary>
+  <developer id="io.github.developer180527">
+    <name>Venu Gopal</name>
+  </developer>
+  <description>
+    <p>
+      Flasher writes Raspberry Pi OS, Linux distributions, Windows installers
+      and any .img, .iso or compressed image to a USB drive or SD card, and
+      reads it back to check it.
+    </p>
+    <ul>
+      <li>Checks the download against its published SHA-256 before touching the drive</li>
+      <li>Writes disk images byte for byte; copies Windows installer ISOs onto FAT32</li>
+      <li>Only offers removable drives, never the disk the system runs from</li>
+      <li>Turns a flashed drive back into an ordinary exFAT drive</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.developer180527.flasher.desktop</launchable>
+  <url type="homepage">https://github.com/developer180527/Flasher</url>
+  <url type="bugtracker">https://github.com/developer180527/Flasher/issues</url>
+  <categories>
+    <category>System</category>
+    <category>Utility</category>
+  </categories>
+  <provides>
+    <binary>flasher</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+</component>

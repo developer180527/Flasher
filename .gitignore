@@ -1,2 +1,5 @@
 target/
 .cargo/config.toml
+# A global "Icon?" rule (for macOS's Icon\r files) matches this folder on
+# case-insensitive file systems.
+!/assets/icons/

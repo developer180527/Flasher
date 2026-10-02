@@ -1,0 +1,18 @@
+#!/bin/sh
+# Flasher's AppImage entry point.
+here=$(dirname "$(readlink -f "$0")")
+
+# Writing a disk goes through libflasher-helper, which pkexec runs as root.
+# Root cannot read inside this AppImage's mount (FUSE keeps other users
+# out), so unless a helper is installed (the .deb puts one in /usr/libexec),
+# pkexec is handed a copy in the user's private runtime directory.
+if [ -z "${LIBFLASHER_HELPER:-}" ] && [ ! -x /usr/libexec/libflasher-helper ] &&
+  [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
+  helper=$XDG_RUNTIME_DIR/libflasher-helper
+  if cp "$here/usr/libexec/libflasher-helper" "$helper.new" &&
+    chmod 0755 "$helper.new" && mv -f "$helper.new" "$helper"; then
+    export LIBFLASHER_HELPER="$helper"
+  fi
+fi
+
+exec "$here/usr/bin/flasher" "$@"

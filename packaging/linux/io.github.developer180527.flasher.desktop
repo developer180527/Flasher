@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Flasher
+GenericName=Disk Image Writer
+Comment=Write disk images to USB drives and SD cards
+Icon=io.github.developer180527.flasher
+# No %f: with arguments, flasher runs its terminal commands instead.
+Exec=flasher
+Terminal=false
+Categories=System;Utility;
+Keywords=usb;sd;card;iso;img;image;flash;write;burn;raspberry;bootable;
+StartupNotify=true
+StartupWMClass=io.github.developer180527.flasher

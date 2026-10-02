@@ -25,6 +25,11 @@ use winit::window::{Theme as OsTheme, Window, WindowId};
 
 const FONT: &[u8] = include_bytes!("../../../assets/Inter.ttf");
 
+/// The app's id: the Linux desktop file and icon are named after it, and a
+/// window carrying it is matched to them by docks and task switchers.
+#[cfg(all(unix, not(target_os = "macos")))]
+const APP_ID: &str = "io.github.developer180527.flasher";
+
 struct Live {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -70,6 +75,18 @@ impl Host {
             .with_title("Flasher")
             .with_inner_size(LogicalSize::new(680.0, 640.0))
             .with_min_inner_size(LogicalSize::new(520.0, 540.0));
+        // macOS takes the icon from the app bundle; elsewhere the window
+        // carries its own.
+        #[cfg(not(target_os = "macos"))]
+        let attrs = attrs.with_window_icon(window_icon());
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let attrs = {
+            use winit::platform::{
+                wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11,
+            };
+            let attrs = WindowAttributesExtWayland::with_name(attrs, APP_ID, "flasher");
+            WindowAttributesExtX11::with_name(attrs, APP_ID, "flasher")
+        };
         let window = Arc::new(el.create_window(attrs).expect("window"));
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
@@ -237,6 +254,22 @@ impl Host {
             }));
         }
     }
+}
+
+/// Flasher's icon for the title bar and taskbar, from the PNG in assets.
+#[cfg(not(target_os = "macos"))]
+fn window_icon() -> Option<winit::window::Icon> {
+    let png = include_bytes!("../../../assets/icons/flasher-256.png");
+    let mut reader = png::Decoder::new(std::io::Cursor::new(&png[..]))
+        .read_info()
+        .ok()?;
+    let mut rgba = vec![0; reader.output_buffer_size()?];
+    let frame = reader.next_frame(&mut rgba).ok()?;
+    if frame.color_type != png::ColorType::Rgba || frame.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    rgba.truncate(frame.buffer_size());
+    winit::window::Icon::from_rgba(rgba, frame.width, frame.height).ok()
 }
 
 impl ApplicationHandler for Host {

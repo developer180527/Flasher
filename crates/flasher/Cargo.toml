@@ -43,6 +43,11 @@ toml = "1"
 # Already in the tree through winit/wgpu; used to guard Quit (src/macos.rs).
 objc2 = "0.6"
 
+# Puts the icon and manifest into flasher.exe (build.rs); only built on
+# Windows hosts.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
