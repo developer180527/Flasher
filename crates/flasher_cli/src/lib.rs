@@ -200,6 +200,18 @@ fn inspect(path: &str) -> libflasher::Result<()> {
             i.compression
         ),
     }
+    if i.kind.needs_extract() {
+        match libflasher::extract::plan(&i) {
+            Ok(p) => println!(
+                "  extract:     {} files, {}, needs {} on the drive, volume \"{}\"",
+                p.files,
+                human_size(p.bytes),
+                human_size(p.needs),
+                p.label
+            ),
+            Err(e) => println!("  extract:     not possible: {e}"),
+        }
+    }
     Ok(())
 }
 
@@ -213,7 +225,16 @@ fn write(
 ) -> libflasher::Result<()> {
     let platform = libflasher::current_platform();
     let info = image::inspect(img)?;
-    if !info.kind.raw_writable() {
+    if info.kind.needs_extract() {
+        // Fails here, with the reason, before anything is erased.
+        let plan = libflasher::extract::plan(&info)?;
+        eprintln!(
+            "{img} is an ISO that is not a disk image: its {} files ({}) will be copied onto a FAT32 drive named \"{}\"",
+            plan.files,
+            human_size(plan.bytes),
+            plan.label
+        );
+    } else if !info.kind.raw_writable() {
         return Err(libflasher::Error::Unsupported(format!(
             "{}: {}",
             img,
@@ -255,7 +276,7 @@ fn write(
     // thread watches the clock and says so instead of looking frozen.
     let watch = QuietWatch::start();
     let mut status = libflasher::rate::StatusLine::new();
-    let result = libflasher::flash(
+    let result = libflasher::write_image(
         &info,
         raw.as_mut(),
         &FlashOptions::default().with_verify(verify),

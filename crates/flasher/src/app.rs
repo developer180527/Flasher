@@ -130,6 +130,9 @@ pub struct App {
     tab: usize,
     image_path: String,
     image: Option<Result<ImageInfo, String>>,
+    /// For an ISO that is extracted rather than written byte for byte: what
+    /// that will take, or why it cannot be done.
+    extract_plan: Option<Result<libflasher::extract::Plan, String>>,
     sha256: String,
     /// The file the checksum was read from, when it was found rather than typed.
     sha256_source: Option<String>,
@@ -207,6 +210,7 @@ impl App {
             tab: TAB_FLASH,
             image_path: String::new(),
             image: None,
+            extract_plan: None,
             sha256: String::new(),
             sha256_source: None,
             label: "USB DRIVE".into(),
@@ -297,6 +301,14 @@ impl App {
     fn load_image(&mut self) {
         let path = self.image_path.trim().to_string();
         self.image = (!path.is_empty()).then(|| image::inspect(&path).map_err(|e| e.to_string()));
+        // Read an ISO's file list now, so a reason it cannot be extracted
+        // shows before anyone is asked to erase a drive.
+        self.extract_plan = match &self.image {
+            Some(Ok(i)) if i.kind.needs_extract() => {
+                Some(libflasher::extract::plan(i).map_err(|e| e.to_string()))
+            }
+            _ => None,
+        };
         // A checksum found for the previous image says nothing about this one;
         // one the user typed stays theirs to change.
         if self.sha256_source.is_some() || self.sha256.is_empty() {
@@ -411,6 +423,7 @@ impl App {
     fn ready_image(&self) -> Option<&ImageInfo> {
         match &self.image {
             Some(Ok(i)) if i.kind.raw_writable() => Some(i),
+            Some(Ok(i)) if matches!(self.extract_plan, Some(Ok(_))) => Some(i),
             _ => None,
         }
     }
@@ -460,8 +473,13 @@ impl App {
                         // May show the OS password prompt; fine off the UI thread.
                         let mut raw = platform.open_listed(&device)?;
                         let options = FlashOptions::default().with_verify(settings.verify);
-                        let n =
-                            libflasher::flash(&image, raw.as_mut(), &options, &stop, &mut send)?;
+                        let n = libflasher::write_image(
+                            &image,
+                            raw.as_mut(),
+                            &options,
+                            &stop,
+                            &mut send,
+                        )?;
                         drop(raw);
                         if settings.eject {
                             platform.eject(&device)?;
@@ -689,10 +707,19 @@ impl App {
                     Compression::None => format!("{} · {size}", i.kind.describe()),
                     c => format!("{} · {size} · {} compressed", i.kind.describe(), c.name()),
                 };
-                if i.kind.raw_writable() {
-                    ui.label_muted(&line)
-                } else {
-                    error(ui, &line)
+                match &self.extract_plan {
+                    None if i.kind.raw_writable() => ui.label_muted(&line),
+                    None => error(ui, &line),
+                    Some(Ok(p)) => ui.label_muted(&format!(
+                        "{line} · {} files, {} · volume \"{}\"",
+                        p.files,
+                        human_size(p.bytes),
+                        p.label
+                    )),
+                    Some(Err(e)) => {
+                        ui.label_muted(&line);
+                        error(ui, &format!("Cannot extract this ISO: {e}."));
+                    }
                 }
             }
         }

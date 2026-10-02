@@ -125,6 +125,8 @@ fn flash_needs_a_drive() {
     assert!(h.control("confirm").is_none());
 }
 
+/// The fixture's plain ISO has no readable file tree, so extract mode
+/// refuses it; a real plain ISO is extracted (see libflasher's tests).
 #[test]
 fn refuses_non_hybrid_iso() {
     let f = Fixture::new("plainiso");
@@ -629,4 +631,22 @@ fn settings_are_remembered_between_runs() {
     );
     assert_eq!(second.settings.theme, flasher::ThemeChoice::Dark);
     assert_eq!(second.last_image_dir(), Some(f.dir.as_path()));
+}
+
+// ---- extract mode -------------------------------------------------------
+
+#[test]
+fn a_plain_iso_without_uefi_is_refused_before_flashing() {
+    let f = Fixture::new("extract_no_uefi");
+    let drive = f.drive("stick", 96 * MB);
+    let (img, _) = f.image("windows.iso", MB, false); // ISO 9660 header, no MBR, no files
+    let mut h = f.app();
+    h.drop_file(&img);
+    snap(&mut h, "extract-refused");
+    h.click("flash").unwrap();
+    assert!(
+        h.control("confirm").is_none(),
+        "offered to erase the drive for an ISO it cannot extract"
+    );
+    assert!(std::fs::read(&drive).unwrap().iter().all(|&b| b == 0xEE));
 }
