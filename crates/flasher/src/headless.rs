@@ -40,6 +40,8 @@ impl Headless {
             dt: 1.0 / 60.0,
         };
         let mut h = Self { app, ui, info };
+        // The first drive list arrives from a thread, as in the window.
+        h.settle();
         // libgui hit-tests against the previous frame's rects: settle first.
         h.frames(3);
         h
@@ -118,9 +120,20 @@ impl Headless {
         self.frame();
     }
 
-    /// What dropping a file on the window does.
+    /// What dropping a file on the window does, up to the image being read.
     pub fn drop_file(&mut self, path: &Path) {
         self.app.set_image(path);
+        self.settle();
+    }
+
+    /// Build frames until nothing is being read in the background (an image,
+    /// the drive list), as a person waits for the window to fill in.
+    pub fn settle(&mut self) {
+        let end = Instant::now() + Duration::from_secs(30);
+        while self.app.pending() && Instant::now() < end {
+            self.frame();
+            std::thread::sleep(Duration::from_millis(2));
+        }
         self.frame();
     }
 
@@ -128,7 +141,7 @@ impl Headless {
     /// event loop does while it shows progress.
     pub fn wait_until_idle(&mut self, timeout: Duration) -> Result<(), String> {
         let end = Instant::now() + timeout;
-        while self.app.busy() {
+        while self.app.busy() || self.app.pending() {
             if Instant::now() > end {
                 return Err(format!("still busy after {timeout:?}"));
             }

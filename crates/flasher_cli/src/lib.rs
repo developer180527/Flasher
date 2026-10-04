@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
 use libflasher::platform::human_size;
-use libflasher::{image, FlashOptions};
+use libflasher::{image, DeviceInfo, FlashOptions, ImageInfo, ImageKind};
 
 const USAGE: &str = "\
 usage: flasher                  open the window
@@ -125,8 +125,57 @@ pub fn run(args: impl IntoIterator<Item = String>) -> ExitCode {
     }
 }
 
-/// Ask before erasing; `--yes` skips it, for scripts.
-fn confirm(device: &libflasher::DeviceInfo, what: &str, yes: bool) -> libflasher::Result<()> {
+/// Drives larger than this get a second look before they are erased: sticks
+/// and cards are smaller; backup and data disks are not.
+pub const LARGE_DRIVE: u64 = 64_000_000_000;
+
+/// What to say before erasing `device` (for `image`, when flashing), beyond
+/// "everything on it will be erased": its volumes, if it is a large drive,
+/// and if the image may not be a disk image at all. The window and the
+/// terminal say the same.
+pub fn erase_warnings(device: &DeviceInfo, image: Option<&ImageInfo>) -> Vec<String> {
+    let mut out = Vec::new();
+    if !device.mountpoints.is_empty() {
+        out.push(format!("Volumes on it: {}.", device.mountpoints.join(", ")));
+    }
+    if device.size > LARGE_DRIVE {
+        out.push(format!(
+            "This is a large drive ({}). Make sure it is not a backup or data disk.",
+            human_size(device.size)
+        ));
+    }
+    if image.is_some_and(|i| i.kind == ImageKind::Unknown) {
+        out.push(
+            "This file has no partition table or ISO header. It may not be a disk image, \
+             and the drive may not start from it."
+                .into(),
+        );
+    }
+    out
+}
+
+/// What a matching checksum shows, by where it came from: `None` for one the
+/// user gave, `Some(file)` for one found beside the image. A file from the
+/// same place as the image shows the download is intact, not that it is
+/// genuine (see `libflasher::checksum`).
+pub fn checksum_matched(found_in: Option<&str>) -> String {
+    match found_in {
+        None => "the image matched the SHA-256 you gave".into(),
+        Some(file) => format!("the image matched {file} beside it, so the download is intact"),
+    }
+}
+
+/// Ask before erasing; `--yes` skips the question, for scripts, but not the
+/// warnings.
+fn confirm(
+    device: &DeviceInfo,
+    what: &str,
+    warnings: &[String],
+    yes: bool,
+) -> libflasher::Result<()> {
+    for w in warnings {
+        eprintln!("warning: {w}");
+    }
     if yes {
         return Ok(());
     }
@@ -158,6 +207,7 @@ fn restore(dev: &str, label: &str, awake: bool, yes: bool) -> libflasher::Result
     confirm(
         &device,
         &format!("make it an ordinary exFAT drive named \"{label}\""),
+        &erase_warnings(&device, None),
         yes,
     )?;
     let _awake = awake
@@ -252,17 +302,26 @@ fn write(
         None => libflasher::checksum::find_published(&info.path).map(|p| (p.sha256, p.source)),
     };
     match &expected {
-        Some((_, source)) => eprintln!("checking the image against the SHA-256 from {source}"),
+        Some((_, source)) if sha256.is_none() => eprintln!(
+            "checking the image against {source} beside it: this shows the download is intact, \
+             not that it is genuine; for that, pass --sha256 with the hash from the publisher's website"
+        ),
+        Some(_) => eprintln!("checking the image against the SHA-256 given"),
         None => eprintln!(
             "no SHA-256 given or found next to the image: a damaged download cannot be detected"
         ),
     }
-    confirm(&device, &format!("write {img}"), yes)?;
+    confirm(
+        &device,
+        &format!("write {img}"),
+        &erase_warnings(&device, Some(&info)),
+        yes,
+    )?;
     let _awake = awake
         .then(|| platform.keep_awake("Writing a disk image"))
         .flatten();
 
-    if let Some((hash, _)) = &expected {
+    if let Some((hash, source)) = &expected {
         let mut status = libflasher::rate::StatusLine::new();
         libflasher::checksum::verify_image(&info, hash, &AtomicBool::new(false), &mut |p| {
             status.update(p);
@@ -272,7 +331,8 @@ fn write(
                 .unwrap_or_default();
             eprint!("\r\x1b[2K{pct}{}", status.text());
         })?;
-        eprintln!("\r\x1b[2Kimage matches its published SHA-256");
+        let found_in = sha256.is_none().then_some(source.as_str());
+        eprintln!("\r\x1b[2K{}", checksum_matched(found_in));
     }
 
     let mut raw = platform.open_listed(&device)?;
@@ -393,5 +453,47 @@ impl QuietWatch {
 
     fn stop(&self) {
         self.done.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn drive(size: u64, mounts: &[&str]) -> DeviceInfo {
+        DeviceInfo::new(
+            "/dev/disk4",
+            "Stick",
+            size,
+            "USB",
+            mounts.iter().map(|m| m.to_string()).collect(),
+        )
+    }
+
+    #[test]
+    fn a_plain_stick_needs_no_warning() {
+        assert!(erase_warnings(&drive(32_000_000_000, &[]), None).is_empty());
+    }
+
+    #[test]
+    fn names_volumes_and_large_drives() {
+        let w = erase_warnings(&drive(2_000_000_000_000, &["/Volumes/Backup"]), None);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[0].contains("/Volumes/Backup"), "{w:?}");
+        assert!(w[1].contains("large drive (2.0 TB)"), "{w:?}");
+        assert!(
+            erase_warnings(&drive(LARGE_DRIVE, &[]), None).is_empty(),
+            "64 GB is a stick"
+        );
+    }
+
+    #[test]
+    fn says_where_a_checksum_came_from() {
+        assert!(checksum_matched(None).contains("you gave"));
+        let m = checksum_matched(Some("SHA256SUMS"));
+        assert!(
+            m.contains("SHA256SUMS beside it") && m.contains("intact"),
+            "{m}"
+        );
     }
 }

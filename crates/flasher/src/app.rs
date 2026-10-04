@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 use libflasher::platform::{human_size, volume_label};
 use libflasher::rate::{human_duration, StatusLine};
 use libflasher::{
-    checksum, image, Compression, DeviceInfo, FlashOptions, ImageInfo, Platform, Progress,
+    checksum, image, Compression, DeviceInfo, FlashOptions, ImageInfo, ImageKind, Platform,
+    Progress,
 };
 use libgui::*;
 
@@ -136,6 +137,13 @@ pub struct App {
     sha256: String,
     /// The file the checksum was read from, when it was found rather than typed.
     sha256_source: Option<String>,
+    /// An image being read in the background (`inspect`, the extract plan,
+    /// a checksum file beside it): a Windows ISO's file list can take
+    /// seconds to read, and the window must not freeze meanwhile. A newer
+    /// choice replaces the receiver, so a stale answer is never applied.
+    loading: Option<Receiver<Loaded>>,
+    /// A drive listing running in the background (Refresh, after a job).
+    listing: Option<Receiver<Result<Vec<DeviceInfo>, String>>>,
     label: String,
     pub settings: Settings,
     stage: Stage,
@@ -190,6 +198,13 @@ struct Job {
     last_heard: Instant,
 }
 
+/// What reading an image in the background found.
+struct Loaded {
+    image: Result<ImageInfo, String>,
+    plan: Option<Result<libflasher::extract::Plan, String>>,
+    found: Option<checksum::Published>,
+}
+
 enum Msg {
     Progress(Progress),
     /// The outcome, and a warning to show alongside a success.
@@ -218,6 +233,8 @@ impl App {
             extract_plan: None,
             sha256: String::new(),
             sha256_source: None,
+            loading: None,
+            listing: None,
             label: "USB DRIVE".into(),
             settings: Settings::default(),
             system_dark: true,
@@ -249,6 +266,12 @@ impl App {
     /// A job is running: the host keeps frames coming to show it.
     pub fn busy(&self) -> bool {
         matches!(self.stage, Stage::Running(_))
+    }
+
+    /// Work is running in the background that will change what is shown:
+    /// an image being read, or the drive list. The host keeps waking for it.
+    pub fn pending(&self) -> bool {
+        self.loading.is_some() || self.listing.is_some()
     }
 
     /// What the last job ended with, once it has ended.
@@ -298,6 +321,14 @@ impl App {
         &self.devices
     }
 
+    /// The size of the image chosen, once it has been read (for tests).
+    pub fn image_size(&self) -> Option<u64> {
+        match &self.image {
+            Some(Ok(i)) => i.disk_size,
+            _ => None,
+        }
+    }
+
     /// The checksum the next flash will be checked against, and where it came from.
     pub fn sha256(&self) -> (&str, Option<&str>) {
         (&self.sha256, self.sha256_source.as_deref())
@@ -341,36 +372,55 @@ impl App {
 
     fn load_image(&mut self) {
         let path = self.image_path.trim().to_string();
-        self.image = (!path.is_empty()).then(|| image::inspect(&path).map_err(|e| e.to_string()));
-        // Read an ISO's file list now, so a reason it cannot be extracted
-        // shows before anyone is asked to erase a drive.
-        self.extract_plan = match &self.image {
-            Some(Ok(i)) if i.kind.needs_extract() => {
-                Some(libflasher::extract::plan(i).map_err(|e| e.to_string()))
-            }
-            _ => None,
-        };
-        // A checksum found for the previous image says nothing about this one;
-        // one the user typed stays theirs to change.
+        self.image = None;
+        self.extract_plan = None;
+        self.stage = Stage::Idle;
+        if path.is_empty() {
+            self.loading = None;
+            self.apply_found(None);
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let image = image::inspect(&path).map_err(|e| e.to_string());
+            // Read an ISO's file list now, so a reason it cannot be
+            // extracted shows before anyone is asked to erase a drive.
+            let plan = match &image {
+                Ok(i) if i.kind.needs_extract() => {
+                    Some(libflasher::extract::plan(i).map_err(|e| e.to_string()))
+                }
+                _ => None,
+            };
+            let found = checksum::find_published(Path::new(&path));
+            let _ = tx.send(Loaded { image, plan, found });
+        });
+        self.loading = Some(rx);
+    }
+
+    /// A checksum found beside the image. One found for the previous image
+    /// says nothing about this one; one the user typed stays theirs to change.
+    fn apply_found(&mut self, found: Option<checksum::Published>) {
         if self.sha256_source.is_some() || self.sha256.is_empty() {
             self.sha256.clear();
             self.sha256_source = None;
-            if let Some(found) = (!path.is_empty())
-                .then(|| checksum::find_published(Path::new(&path)))
-                .flatten()
-            {
+            if let Some(found) = found {
                 self.sha256 = found.sha256;
                 self.sha256_source = Some(found.source);
             }
         }
-        self.stage = Stage::Idle;
     }
 
     // ---- drives ----------------------------------------------------------
 
+    /// List the drives again, off the UI thread: on macOS a listing runs
+    /// `diskutil` once per disk. [`App::tick`] applies the result.
     fn refresh(&mut self) {
-        let listed = self.platform.list_devices().map_err(|e| e.to_string());
-        self.apply_devices(listed);
+        let (tx, rx) = mpsc::channel();
+        let platform = self.platform.clone();
+        thread::spawn(move || {
+            let _ = tx.send(platform.list_devices().map_err(|e| e.to_string()));
+        });
+        self.listing = Some(rx);
     }
 
     fn apply_devices(&mut self, listed: Result<Vec<DeviceInfo>, String>) {
@@ -456,6 +506,34 @@ impl App {
             self.apply_devices(list);
             changed = true;
         }
+        if let Some(rx) = &self.listing {
+            match rx.try_recv() {
+                Ok(list) => {
+                    self.listing = None;
+                    self.apply_devices(list);
+                    changed = true;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.listing = None,
+            }
+        }
+        if let Some(rx) = &self.loading {
+            match rx.try_recv() {
+                Ok(loaded) => {
+                    self.loading = None;
+                    self.image = Some(loaded.image);
+                    self.extract_plan = loaded.plan;
+                    self.apply_found(loaded.found);
+                    changed = true;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.loading = None;
+                    self.image = Some(Err("reading the image stopped unexpectedly".into()));
+                    changed = true;
+                }
+            }
+        }
         changed | self.poll_job()
     }
 
@@ -497,6 +575,7 @@ impl App {
                 else {
                     return;
                 };
+                let found_in = self.sha256_source.clone();
                 thread::spawn(move || {
                     let mut send = |p| {
                         let _ = tx.send(Msg::Progress(p));
@@ -531,7 +610,8 @@ impl App {
                             done += " and verified";
                         }
                         if expected.is_some() {
-                            done += "; the image matched its published SHA-256";
+                            done += "; ";
+                            done += &flasher_cli::checksum_matched(found_in.as_deref());
                         }
                         done += if matches!(ejected, Some(Ok(()))) {
                             ". It is safe to remove the drive."
@@ -745,6 +825,7 @@ impl App {
             }
         });
         match &self.image {
+            None if self.loading.is_some() => ui.label_muted("Reading the image…"),
             None => ui.label_muted("Choose a file, or drop one on the window."),
             Some(Err(e)) => error(ui, e),
             Some(Ok(i)) => {
@@ -795,7 +876,9 @@ impl App {
         match (self.expected_sha256(), &self.sha256_source) {
             (Err(e), _) => error(ui, &e),
             (Ok(Some(_)), Some(src)) => ui.label_muted(&format!(
-                "Found in {src} next to the image; it is checked before writing."
+                "Found in {src} next to the image and checked before writing. That shows the \
+                 download is intact; to know it is genuine, use the checksum from the \
+                 publisher's website instead."
             )),
             (Ok(Some(_)), None) => {
                 ui.label_muted("The image is checked against this before anything is written.")
@@ -866,6 +949,23 @@ impl App {
         ));
     }
 
+    /// What the confirmation says beyond "everything will be erased": the
+    /// drive's volumes, a large drive, an image that may not be one. The
+    /// same words as the terminal's.
+    pub fn confirm_warnings(&self) -> Vec<String> {
+        let Stage::Confirm(task) = self.stage else {
+            return Vec::new();
+        };
+        let Some(device) = self.devices.get(self.selected) else {
+            return Vec::new();
+        };
+        let image = match task {
+            Task::Flash => self.ready_image(),
+            Task::Restore => None,
+        };
+        flasher_cli::erase_warnings(device, image)
+    }
+
     fn can_start(&self, task: Task) -> bool {
         let drive = self.selected < self.devices.len();
         match task {
@@ -909,9 +1009,16 @@ impl App {
                     ui,
                     &format!("Everything on {name} ({path}) will be erased."),
                 );
+                for w in self.confirm_warnings() {
+                    warning(ui, &w);
+                }
                 ui.label_muted(
                     "A failing drive can freeze your computer while it is written. Save your work first.",
                 );
+                let unknown = task == Task::Flash
+                    && self
+                        .ready_image()
+                        .is_some_and(|i| i.kind == ImageKind::Unknown);
                 button_row(ui, "confirm", |ui| {
                     let r = ui.button("Cancel");
                     self.controls.push(("cancel", r.rect));
@@ -919,6 +1026,8 @@ impl App {
                         self.stage = Stage::Idle;
                     }
                     let label = match task {
+                        // Said out loud: the warning above was read and overruled.
+                        Task::Flash if unknown => "Erase and flash anyway",
                         Task::Flash => "Erase and flash",
                         Task::Restore => "Erase and restore",
                     };

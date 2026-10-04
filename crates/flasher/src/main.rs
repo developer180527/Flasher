@@ -397,7 +397,9 @@ impl ApplicationHandler for Host {
         // Sleep until input, waking early for a running write's progress or
         // for whatever the UI asked to animate.
         let mut wake = w.repaint_after.map(|t| (t - elapsed).max(0.0));
-        if self.app.busy() {
+        if self.app.busy() || self.app.pending() {
+            // A write's progress, or an image or drive list being read in
+            // the background, arrives with no input event: look again soon.
             wake = Some(wake.map_or(0.05, |t| t.min(0.05)));
         } else if self.app.settings.auto_refresh {
             // Often enough that a new drive appears promptly; this is a

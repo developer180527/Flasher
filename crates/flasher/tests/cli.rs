@@ -112,7 +112,9 @@ fn checks_the_published_checksum_before_writing() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     assert!(
-        stderr.contains("SHA-256 from SHA256SUMS") && stderr.contains("matches"),
+        stderr.contains("against SHA256SUMS beside it")
+            && stderr.contains("not that it is genuine")
+            && stderr.contains("matched SHA256SUMS beside it, so the download is intact"),
         "{stderr}"
     );
     std::fs::remove_dir_all(dir).ok();

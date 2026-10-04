@@ -354,7 +354,7 @@ fn finds_and_checks_a_published_checksum() {
     assert!(
         outcome
             .as_ref()
-            .is_ok_and(|m| m.contains("matched its published SHA-256")),
+            .is_ok_and(|m| m.contains("matched SHA256SUMS beside it, so the download is intact")),
         "{outcome:?}"
     );
     assert_eq!(&std::fs::read(&drive).unwrap()[..bytes.len()], &bytes[..]);
@@ -739,4 +739,123 @@ fn a_failed_eject_is_a_warning_on_a_successful_flash() {
     let warning = h.app.outcome_warning().expect("a warning about ejecting");
     assert!(warning.contains("the disk is busy"), "{warning}");
     assert_eq!(&std::fs::read(&drive).unwrap()[..bytes.len()], &bytes[..]);
+}
+
+// ---- what the confirmation and outcome say ---------------------------
+
+/// A file with no partition table and no ISO header: flashable, but the
+/// confirmation says what it is and the button says "anyway".
+#[test]
+fn an_image_of_unknown_kind_is_flagged_before_erasing() {
+    let f = Fixture::new("unknown_kind");
+    f.drive("stick", 8 * MB);
+    let img = f.dir.join("firmware.bin");
+    std::fs::write(&img, vec![0x42u8; MB]).unwrap();
+    let mut h = f.app();
+    h.drop_file(&img);
+    h.click("flash").unwrap();
+    let warnings = h.app.confirm_warnings();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("may not be a disk image")),
+        "{warnings:?}"
+    );
+    snap(&mut h, "confirm-unknown-kind");
+
+    // A disk image gets no such warning.
+    let (iso, _) = f.image("distro.iso", MB, true);
+    h.click("cancel").unwrap();
+    h.drop_file(&iso);
+    h.click("flash").unwrap();
+    assert!(
+        h.app.confirm_warnings().is_empty(),
+        "{:?}",
+        h.app.confirm_warnings()
+    );
+}
+
+/// A checksum typed in is credited as the user's, not as "published".
+#[test]
+fn a_typed_checksum_is_named_as_such() {
+    let f = Fixture::new("sum_typed");
+    f.drive("stick", 8 * MB);
+    let (img, _) = f.image("distro.iso", MB, true);
+    let hash = {
+        use std::sync::atomic::AtomicBool;
+        libflasher::checksum::sha256_file(&img, 0, &AtomicBool::new(false), &mut |_| {}).unwrap()
+    };
+    let mut h = f.app();
+    h.drop_file(&img);
+    h.app.set_sha256(&hash);
+    flash_through_ui(&mut h);
+    let outcome = h.app.outcome().unwrap();
+    assert!(
+        outcome
+            .as_ref()
+            .is_ok_and(|m| m.contains("matched the SHA-256 you gave")),
+        "{outcome:?}"
+    );
+}
+
+// ---- nothing slow on the UI thread ------------------------------------
+
+/// A platform whose listing takes as long as a slow `diskutil`.
+struct SlowList(MockPlatform);
+
+impl libflasher::Platform for SlowList {
+    fn name(&self) -> &'static str {
+        "slow"
+    }
+    fn list_devices(&self) -> libflasher::Result<Vec<libflasher::DeviceInfo>> {
+        std::thread::sleep(Duration::from_secs(2));
+        self.0.list_devices()
+    }
+    fn open_device(
+        &self,
+        d: &libflasher::DeviceInfo,
+    ) -> libflasher::Result<Box<dyn libflasher::RawDevice>> {
+        self.0.open_device(d)
+    }
+    fn eject(&self, d: &libflasher::DeviceInfo) -> libflasher::Result<()> {
+        self.0.eject(d)
+    }
+}
+
+/// Refresh with a listing that takes 2 s: the window keeps drawing frames
+/// meanwhile, and the list arrives when the listing ends.
+#[test]
+fn a_slow_drive_listing_does_not_freeze_the_window() {
+    let f = Fixture::new("slow_list");
+    f.drive("stick", 8 * MB);
+    let mut h = Headless::new(Arc::new(SlowList(MockPlatform::new(&f.dir))));
+    assert_eq!(h.app.devices().len(), 1);
+
+    h.click("refresh").unwrap();
+    assert!(h.app.pending(), "the listing should be running");
+    let start = std::time::Instant::now();
+    h.frames(10);
+    assert!(
+        start.elapsed() < Duration::from_millis(500),
+        "10 frames took {:?}: something waited on the listing",
+        start.elapsed()
+    );
+    h.settle();
+    assert!(!h.app.pending());
+    assert_eq!(h.app.devices().len(), 1);
+}
+
+/// Two images chosen in quick succession: the second one stands, however
+/// the background reads finish.
+#[test]
+fn the_last_image_chosen_wins() {
+    let f = Fixture::new("last_image");
+    let (a, _) = f.image("a.iso", MB, true);
+    let (b, _) = f.image("b.iso", 2 * MB, true);
+    let mut h = f.app();
+    h.app.set_image(&a);
+    h.app.set_image(&b);
+    h.settle();
+    let size = h.app.image_size();
+    assert_eq!(size, Some(2 * MB as u64));
 }
