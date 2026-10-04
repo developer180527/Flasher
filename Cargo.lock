@@ -814,7 +814,7 @@ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
 name = "flasher"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arboard",
  "flasher_cli",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "flasher_cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libflasher",
 ]
@@ -1365,7 +1365,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 [[package]]
 name = "libflasher"
 version = "0.1.0"
-source = "git+https://github.com/developer180527/libflasher?rev=c4b2d3c8a10212233397669eda23e601b8693877#c4b2d3c8a10212233397669eda23e601b8693877"
+source = "git+https://github.com/developer180527/libflasher?rev=0a9cea8b1d34dbc974c16160398ab2b514d5012b#0a9cea8b1d34dbc974c16160398ab2b514d5012b"
 dependencies = [
  "libflasher_core",
  "libflasher_platform",
@@ -1374,7 +1374,7 @@ dependencies = [
 [[package]]
 name = "libflasher_core"
 version = "0.1.0"
-source = "git+https://github.com/developer180527/libflasher?rev=c4b2d3c8a10212233397669eda23e601b8693877#c4b2d3c8a10212233397669eda23e601b8693877"
+source = "git+https://github.com/developer180527/libflasher?rev=0a9cea8b1d34dbc974c16160398ab2b514d5012b#0a9cea8b1d34dbc974c16160398ab2b514d5012b"
 dependencies = [
  "bzip2",
  "crc32fast",
@@ -1389,7 +1389,7 @@ dependencies = [
 [[package]]
 name = "libflasher_linux"
 version = "0.1.0"
-source = "git+https://github.com/developer180527/libflasher?rev=c4b2d3c8a10212233397669eda23e601b8693877#c4b2d3c8a10212233397669eda23e601b8693877"
+source = "git+https://github.com/developer180527/libflasher?rev=0a9cea8b1d34dbc974c16160398ab2b514d5012b#0a9cea8b1d34dbc974c16160398ab2b514d5012b"
 dependencies = [
  "libc",
  "libflasher_core",
@@ -1398,7 +1398,7 @@ dependencies = [
 [[package]]
 name = "libflasher_macos"
 version = "0.1.0"
-source = "git+https://github.com/developer180527/libflasher?rev=c4b2d3c8a10212233397669eda23e601b8693877#c4b2d3c8a10212233397669eda23e601b8693877"
+source = "git+https://github.com/developer180527/libflasher?rev=0a9cea8b1d34dbc974c16160398ab2b514d5012b#0a9cea8b1d34dbc974c16160398ab2b514d5012b"
 dependencies = [
  "libc",
  "libflasher_core",
@@ -1408,7 +1408,7 @@ dependencies = [
 [[package]]
 name = "libflasher_platform"
 version = "0.1.0"
-source = "git+https://github.com/developer180527/libflasher?rev=c4b2d3c8a10212233397669eda23e601b8693877#c4b2d3c8a10212233397669eda23e601b8693877"
+source = "git+https://github.com/developer180527/libflasher?rev=0a9cea8b1d34dbc974c16160398ab2b514d5012b#0a9cea8b1d34dbc974c16160398ab2b514d5012b"
 dependencies = [
  "libflasher_core",
  "libflasher_linux",
@@ -1419,7 +1419,7 @@ dependencies = [
 [[package]]
 name = "libflasher_windows"
 version = "0.1.0"
-source = "git+https://github.com/developer180527/libflasher?rev=c4b2d3c8a10212233397669eda23e601b8693877#c4b2d3c8a10212233397669eda23e601b8693877"
+source = "git+https://github.com/developer180527/libflasher?rev=0a9cea8b1d34dbc974c16160398ab2b514d5012b#0a9cea8b1d34dbc974c16160398ab2b514d5012b"
 dependencies = [
  "libflasher_core",
  "windows-sys 0.59.0",
