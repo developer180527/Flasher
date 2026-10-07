@@ -4,6 +4,8 @@
 //! hands any command to [`run`]. The same libflasher underneath, no GUI: for
 //! scripts, servers and anyone who prefers a terminal.
 
+pub mod journal;
+
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
@@ -90,6 +92,15 @@ pub fn run(args: impl IntoIterator<Item = String>) -> ExitCode {
         }
     };
     let pos: Vec<&str> = args.pos.iter().map(String::as_str).collect();
+    // Commands that change or read a drive are logged, as the window's are.
+    let logged = matches!(pos.first(), Some(&("write" | "verify" | "restore")));
+    if logged {
+        journal::open_default();
+        journal::line(format_args!(
+            "command: flasher {}",
+            std::env::args().skip(1).collect::<Vec<_>>().join(" ")
+        ));
+    }
     let awake = !args.flag("--allow-sleep");
     let yes = args.flag("--yes");
 
@@ -117,9 +128,20 @@ pub fn run(args: impl IntoIterator<Item = String>) -> ExitCode {
         }
     };
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            if logged {
+                journal::line("finished");
+            }
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             eprintln!("\r\x1b[2Kerror: {e}");
+            if logged {
+                journal::line(format_args!("failed: {e}"));
+                if let Some(p) = journal::path() {
+                    eprintln!("(details in {})", p.display());
+                }
+            }
             ExitCode::FAILURE
         }
     }
@@ -379,14 +401,25 @@ fn listed(
     platform: &dyn libflasher::Platform,
     dev: &str,
 ) -> libflasher::Result<libflasher::DeviceInfo> {
-    platform
+    let found = platform
         .list_devices()?
         .into_iter()
         .find(|d| d.path == dev)
         .ok_or_else(|| libflasher::Error::Refused {
             device: dev.into(),
             reason: "not a listed removable drive".into(),
-        })
+        })?;
+    let serial = found
+        .serial
+        .as_deref()
+        .map(|s| format!(", serial {s}"))
+        .unwrap_or_default();
+    journal::line(format_args!(
+        "drive: {} ({}{serial})",
+        found.path,
+        found.display_name()
+    ));
+    Ok(found)
 }
 
 fn verify(img: &str, dev: &str) -> libflasher::Result<()> {

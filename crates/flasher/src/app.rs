@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use flasher_cli::journal;
 use libflasher::platform::{human_size, volume_label};
 use libflasher::rate::{human_duration, StatusLine};
 use libflasher::{
@@ -156,6 +157,12 @@ pub struct App {
     /// Set by the Browse button; the host shows the native file dialog
     /// between frames, since libgui has no file dialogs by design.
     pub want_browse: bool,
+    /// Set by "Copy details": text for the host to put on the clipboard.
+    pub want_copy: Option<String>,
+    /// What the last job was given, for its failure report.
+    last_job: Vec<(&'static str, String)>,
+    /// The drive list as last logged, so an unchanged list is not logged again.
+    logged_drives: String,
     /// Where Browse… starts: the folder of the last image chosen.
     last_image_dir: Option<PathBuf>,
     /// Where settings are remembered, and what was last written there.
@@ -196,6 +203,8 @@ struct Job {
     /// When the worker last reported anything. A write blocked in the kernel
     /// reports nothing, and this is how the UI notices.
     last_heard: Instant,
+    /// The phase last logged, so the log gets one line per phase.
+    phase: &'static str,
 }
 
 /// What reading an image in the background found.
@@ -241,6 +250,9 @@ impl App {
             applied_dark: None,
             stage: Stage::Idle,
             want_browse: false,
+            want_copy: None,
+            last_job: Vec::new(),
+            logged_drives: String::new(),
             last_image_dir: None,
             store: None,
             controls: Vec::new(),
@@ -436,6 +448,22 @@ impl App {
             }
         }
         self.device_names = self.devices.iter().map(DeviceInfo::display_name).collect();
+        let summary = match &self.list_error {
+            Some(e) => format!("drive list failed: {e}"),
+            None if self.devices.is_empty() => "drives: none".into(),
+            None => format!(
+                "drives: {}",
+                self.devices
+                    .iter()
+                    .map(drive_facts)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        };
+        if summary != self.logged_drives {
+            journal::line(&summary);
+            self.logged_drives = summary;
+        }
         let kept = previous
             .as_ref()
             .and_then(|p| self.devices.iter().position(|d| d.same_disk(p)));
@@ -521,6 +549,7 @@ impl App {
             match rx.try_recv() {
                 Ok(loaded) => {
                     self.loading = None;
+                    log_image(&self.image_path, &loaded);
                     self.image = Some(loaded.image);
                     self.extract_plan = loaded.plan;
                     self.apply_found(loaded.found);
@@ -564,6 +593,33 @@ impl App {
         };
         let platform = self.platform.clone();
         let settings = self.settings;
+        self.last_job = vec![
+            ("Task", format!("{task:?}")),
+            ("Drive", drive_facts(&device)),
+            ("Image", self.image_path.trim().to_string()),
+            (
+                "Options",
+                format!(
+                    "verify {}, eject {}, keep awake {}, checksum {}",
+                    settings.verify,
+                    settings.eject,
+                    settings.keep_awake,
+                    match (&self.sha256_source, self.sha256.trim().is_empty()) {
+                        (_, true) => "none".to_string(),
+                        (Some(src), _) => format!("from {src}"),
+                        (None, _) => "typed".to_string(),
+                    }
+                ),
+            ),
+        ];
+        journal::line(format_args!(
+            "start: {}",
+            self.last_job
+                .iter()
+                .map(|(k, v)| format!("{k} {v}"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         let stop = cancel.clone();
@@ -660,6 +716,7 @@ impl App {
             heard: false,
             started: Instant::now(),
             last_heard: Instant::now(),
+            phase: "",
         });
     }
 
@@ -676,14 +733,27 @@ impl App {
                     job.last_heard = Instant::now();
                     job.heard = true;
                     job.status.update(p);
+                    let phase = phase_name(&p);
+                    if phase != job.phase {
+                        journal::line(format_args!("phase: {phase}"));
+                        job.phase = phase;
+                    }
                 }
                 Ok(Msg::Done(r, warning)) => {
+                    match &r {
+                        Ok(msg) => journal::line(format_args!("finished: {msg}")),
+                        Err(e) => journal::line(format_args!("failed: {e}")),
+                    }
+                    if let Some(w) = &warning {
+                        journal::line(format_args!("warning: {w}"));
+                    }
                     self.stage = Stage::Finished(r, warning);
                     self.refresh();
                     return true;
                 }
                 Err(TryRecvError::Empty) => return any,
                 Err(TryRecvError::Disconnected) => {
+                    journal::line("failed: the worker thread stopped unexpectedly");
                     self.stage =
                         Stage::Finished(Err("the worker thread stopped unexpectedly".into()), None);
                     return true;
@@ -1095,6 +1165,7 @@ impl App {
                             let r = ui.button(if stopping { "Stopping…" } else { "Cancel" });
                             self.controls.push(("cancel", r.rect));
                             if r.clicked {
+                                journal::line("cancel requested");
                                 job.cancel.store(true, Ordering::Relaxed);
                             }
                         });
@@ -1112,7 +1183,18 @@ impl App {
                 if let Some(note) = note {
                     warning(ui, note);
                 }
+                let failure = result.as_ref().err().cloned();
                 button_row(ui, "finished", |ui| {
+                    // Something to paste into a bug report: the error, what
+                    // the job was given, and the log leading up to it.
+                    if let Some(e) = &failure {
+                        let r = ui.button("Copy details");
+                        self.controls.push(("copy_details", r.rect));
+                        if r.clicked {
+                            self.want_copy =
+                                Some(journal::report(&format!("Failed: {e}"), &self.last_job));
+                        }
+                    }
                     let r = ui.button_primary("OK");
                     self.controls.push(("ok", r.rect));
                     if r.clicked {
@@ -1147,4 +1229,58 @@ fn error(ui: &mut Ui, text: &str) {
 fn warning(ui: &mut Ui, text: &str) {
     let (size, color) = (ui.theme.metrics.font_size, ui.theme.palette.warning);
     ui.paragraph_with(text, size, color, Align::Start);
+}
+
+/// One drive, for the log: path, name, size, and serial when known.
+fn drive_facts(d: &DeviceInfo) -> String {
+    let serial = d
+        .serial
+        .as_deref()
+        .map(|s| format!(", serial {s}"))
+        .unwrap_or_default();
+    format!("{} ({}{serial})", d.path, d.display_name())
+}
+
+fn log_image(path: &str, loaded: &Loaded) {
+    match &loaded.image {
+        Ok(i) => journal::line(format_args!(
+            "image {}: {} · {} · file {} bytes · disk {}",
+            path.trim(),
+            i.kind.describe(),
+            i.compression.name(),
+            i.file_size,
+            i.disk_size
+                .map_or("size unknown".into(), |s| format!("{s} bytes"))
+        )),
+        Err(e) => journal::line(format_args!("image {}: cannot be read: {e}", path.trim())),
+    }
+    match &loaded.plan {
+        Some(Ok(p)) => journal::line(format_args!(
+            "extract plan: {} files, {} bytes, volume {:?}{}",
+            p.files,
+            p.bytes,
+            p.label,
+            p.wim_parts
+                .map(|n| format!(", install.wim in {n} parts"))
+                .unwrap_or_default()
+        )),
+        Some(Err(e)) => journal::line(format_args!("extract refused: {e}")),
+        None => {}
+    }
+    if let Some(f) = &loaded.found {
+        journal::line(format_args!("checksum found in {}", f.source));
+    }
+}
+
+/// A short name for each phase, for the log.
+fn phase_name(p: &Progress) -> &'static str {
+    match p {
+        Progress::Checking { .. } => "checking the image's SHA-256",
+        Progress::Formatting => "partitioning and formatting",
+        Progress::Copying { .. } => "copying files",
+        Progress::Writing { .. } => "writing",
+        Progress::Syncing => "flushing",
+        Progress::Verifying { .. } => "verifying",
+        _ => "other",
+    }
 }

@@ -254,6 +254,11 @@ impl Host {
         // run loop delivers winit events into it, which winit aborts on. The
         // asynchronous dialog (a sheet on macOS) leaves the loop running;
         // `about_to_wait` collects the answer.
+        if let Some(text) = self.app.want_copy.take() {
+            if let Some(c) = self.clipboard.as_mut() {
+                let _ = c.set_text(text);
+            }
+        }
         if std::mem::take(&mut self.app.want_browse) && self.browse.is_none() {
             let mut dialog = rfd::AsyncFileDialog::new();
             if let Some(dir) = self.app.last_image_dir() {
@@ -284,6 +289,7 @@ fn report_crashes() {
         let log = flasher::prefs::PrefsStore::default_location()
             .map(|s| s.path().with_file_name("crash.log"));
         let mut text = format!("Flasher {} stopped: {info}", env!("CARGO_PKG_VERSION"));
+        flasher_cli::journal::line(format_args!("crashed: {info}"));
         if let Some(log) = &log {
             if let Some(dir) = log.parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -439,6 +445,7 @@ fn main() -> ExitCode {
     if !relaunched && !windows::is_elevated() && windows::relaunch_elevated() {
         return ExitCode::SUCCESS;
     }
+    flasher_cli::journal::open_default();
     report_crashes();
     let el = EventLoop::new().expect("event loop");
     #[cfg(target_os = "macos")]

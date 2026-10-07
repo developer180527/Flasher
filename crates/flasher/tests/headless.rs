@@ -868,3 +868,89 @@ fn the_last_image_chosen_wins() {
     let size = h.app.image_size();
     assert_eq!(size, Some(2 * MB as u64));
 }
+
+// ---- serial numbers and the log ------------------------------------------
+
+/// Two sticks of the same model and size, swapped while the confirmation is
+/// up: only their serial numbers differ, and that must be enough to refuse.
+#[test]
+fn refuses_an_identical_looking_drive_with_another_serial() {
+    let f = Fixture::new("serial_swap");
+    let drive = f.drive("stick", 8 * MB);
+    let serial = drive.with_extension("serial");
+    std::fs::write(&serial, "AA0001").unwrap();
+    let (img, _) = f.image("distro.iso", MB, true);
+    let mut h = f.app();
+    // Held still, as in refuses_a_different_drive_that_took_the_same_path.
+    h.click("tab:options").unwrap();
+    h.click("auto_refresh").unwrap();
+    h.click("tab:flash").unwrap();
+    h.drop_file(&img);
+    h.click("flash").unwrap();
+    // Same name, same size, same model: another stick of the same kind.
+    std::fs::write(&drive, vec![0x22; 8 * MB]).unwrap();
+    std::fs::write(&serial, "BB0002").unwrap();
+    h.click("confirm").unwrap();
+    h.wait_until_idle(Duration::from_secs(30)).unwrap();
+    let outcome = h.app.outcome().unwrap();
+    assert!(
+        outcome
+            .as_ref()
+            .is_err_and(|e| e.contains("different drive")),
+        "{outcome:?}"
+    );
+    assert!(
+        std::fs::read(&drive).unwrap().iter().all(|&b| b == 0x22),
+        "wrote to the other stick"
+    );
+}
+
+#[test]
+fn a_failure_offers_details_to_copy() {
+    let f = Fixture::new("copy_details");
+    let drive = f.drive("corrupt-stick", 8 * MB);
+    std::fs::write(drive.with_extension("serial"), "CC0003").unwrap();
+    let (img, _) = f.image("distro.iso", MB, true);
+    flasher_cli::journal::open(&f.dir.join("logs"));
+    let mut h = f.app();
+    h.drop_file(&img);
+    flash_through_ui(&mut h);
+    assert!(h.app.outcome().unwrap().is_err());
+    snap(&mut h, "copy-details");
+    h.click("copy_details").unwrap();
+    let report = h
+        .app
+        .want_copy
+        .take()
+        .expect("Copy details sets the clipboard text");
+    for needed in [
+        "Failed: verification failed",
+        "corrupt-stick",
+        "serial CC0003",
+        "distro.iso",
+        "Recent log:",
+        "verify true",
+    ] {
+        assert!(
+            report.contains(needed),
+            "report lacks {needed:?}:\n{report}"
+        );
+    }
+    let log = std::fs::read_to_string(f.dir.join("logs/flasher.log")).unwrap();
+    assert!(
+        log.contains("start: Task Flash") && log.contains("failed: verification failed"),
+        "{log}"
+    );
+}
+
+#[test]
+fn success_offers_no_copy_button() {
+    let f = Fixture::new("no_copy");
+    f.drive("stick", 8 * MB);
+    let (img, _) = f.image("distro.iso", MB, true);
+    let mut h = f.app();
+    h.drop_file(&img);
+    flash_through_ui(&mut h);
+    assert!(h.app.outcome().unwrap().is_ok());
+    assert!(h.control("copy_details").is_none());
+}

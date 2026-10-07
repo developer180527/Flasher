@@ -15,6 +15,7 @@ fn flasher(dir: &PathBuf, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_flasher"))
         .args(args)
         .env("FLASHER_MOCK_DIR", dir)
+        .env("FLASHER_LOG_DIR", dir.join("logs"))
         .output()
         .unwrap()
 }
@@ -167,5 +168,44 @@ fn rejects_unknown_options() {
     let out = flasher(&dir, &["list", "--frobnicate"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("unknown option --frobnicate"));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_failed_write_is_logged_and_says_where() {
+    let dir = setup("logged");
+    let img_path = dir.join("disk.img");
+    let mut img = vec![7u8; 8192];
+    img[510] = 0x55;
+    img[511] = 0xAA;
+    std::fs::write(&img_path, &img).unwrap();
+    std::fs::write(dir.join("stick.serial"), "DD0004").unwrap();
+    let drive = dir.join("stick.disk");
+    let wrong = "ab".repeat(32);
+    let out = flasher(
+        &dir,
+        &[
+            "write",
+            img_path.to_str().unwrap(),
+            drive.to_str().unwrap(),
+            "--sha256",
+            &wrong,
+            "--yes",
+        ],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("details in") && stderr.contains("flasher.log"),
+        "{stderr}"
+    );
+    let log = std::fs::read_to_string(dir.join("logs/flasher.log")).unwrap();
+    for needed in [
+        "command: flasher write",
+        "serial DD0004",
+        "failed: the image's SHA-256 does not match",
+    ] {
+        assert!(log.contains(needed), "log lacks {needed:?}:\n{log}");
+    }
     std::fs::remove_dir_all(dir).ok();
 }
