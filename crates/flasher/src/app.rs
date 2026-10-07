@@ -871,6 +871,9 @@ impl App {
             }
             let muted = ui.theme.palette.text_muted;
             label_middle_ellipsis(ui, "drive_path", &line, muted);
+            // Its own line: the path above can be cut in the middle, and the
+            // serial is what tells two sticks of the same model apart.
+            label_middle_ellipsis(ui, "drive_serial", &serial_line(d), muted);
         }
     }
 
@@ -1074,10 +1077,15 @@ impl App {
             Stage::Confirm(task) => {
                 let task = *task;
                 let name = &self.device_names[self.selected];
-                let path = &self.devices[self.selected].path;
+                let d = &self.devices[self.selected];
+                let serial = d
+                    .serial
+                    .as_deref()
+                    .map(|s| format!(", serial {s}"))
+                    .unwrap_or_default();
                 warning(
                     ui,
-                    &format!("Everything on {name} ({path}) will be erased."),
+                    &format!("Everything on {name} ({}{serial}) will be erased.", d.path),
                 );
                 for w in self.confirm_warnings() {
                     warning(ui, &w);
@@ -1282,5 +1290,13 @@ fn phase_name(p: &Progress) -> &'static str {
         Progress::Syncing => "flushing",
         Progress::Verifying { .. } => "verifying",
         _ => "other",
+    }
+}
+
+/// The serial-number line under the drive picker.
+fn serial_line(d: &DeviceInfo) -> String {
+    match &d.serial {
+        Some(s) => format!("Serial number: {s}"),
+        None => "Serial number: not reported by this drive".into(),
     }
 }

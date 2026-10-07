@@ -954,3 +954,20 @@ fn success_offers_no_copy_button() {
     assert!(h.app.outcome().unwrap().is_ok());
     assert!(h.control("copy_details").is_none());
 }
+
+#[test]
+fn shows_the_drives_serial_number() {
+    let f = Fixture::new("show_serial");
+    let drive = f.drive("stick", 8 * MB);
+    std::fs::write(drive.with_extension("serial"), "4C530001231114117413").unwrap();
+    let (img, _) = f.image("distro.iso", MB, true);
+    let mut h = f.app();
+    h.drop_file(&img);
+    snap(&mut h, "serial");
+    assert_eq!(
+        h.app.devices()[0].serial.as_deref(),
+        Some("4C530001231114117413")
+    );
+    h.click("flash").unwrap();
+    snap(&mut h, "serial-confirm");
+}
