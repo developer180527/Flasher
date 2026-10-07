@@ -6,3 +6,12 @@ extends = "dark"
 [palette]
 # Unselected tabs a step darker than the page, so the open one stands out.
 bg_inset = "mix(bg_app, bg_panel, 0.35)"
+# Neutral greys, a step darker than the preset, whose slight blue tint read as
+# navy: red, green and blue equal in each.
+bg_app = "#0f0f0f"
+bg_panel = "#181818"
+surface = "#262626"
+surface_hover = "#303030"
+surface_active = "#1e1e1e"
+border = "#2a2a2a"
+border_strong = "#3d3d3d"

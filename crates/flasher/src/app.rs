@@ -866,9 +866,9 @@ impl App {
     pub fn ui(&mut self, ui: &mut Ui) {
         self.controls.clear();
         self.tick();
-        if self.busy() {
-            ui.request_repaint();
-        }
+        // No repaint request while a job runs: the window redraws for its
+        // progress at a fixed, low rate (see JOB_FPS in main.rs). Asking here
+        // would make every frame ask for the next, at the display's rate.
         let dark = self.dark();
         if self.applied_dark != Some(dark) {
             match theme(dark) {

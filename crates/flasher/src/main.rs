@@ -236,6 +236,10 @@ impl Host {
         w.queue.submit([encoder.finish()]);
         w.window.pre_present_notify();
         w.queue.present(frame);
+        // Let wgpu free what finished frames used (upload staging and the
+        // like). Without it that memory is reclaimed only now and then, and a
+        // window redrawn for minutes on end grew by gigabytes.
+        let _ = w.device.poll(wgpu::PollType::Poll);
 
         w.platform.apply(&w.window, &platform);
         if let Some(text) = platform.copied_text {
@@ -397,7 +401,11 @@ impl ApplicationHandler for Host {
             return;
         }
         let elapsed = w.idle + w.last.elapsed().as_secs_f32();
-        if self.app.busy() || w.ui.needs_frame(elapsed) {
+        // A running job redraws for its progress, but at JOB_FPS, not the
+        // display's refresh rate: a status line needs no 120 frames a second.
+        let since = w.last.elapsed().as_secs_f32();
+        let job_due = self.app.busy() && since >= 1.0 / JOB_FPS;
+        if job_due || w.ui.needs_frame(elapsed) {
             w.window.request_redraw();
         }
         // Sleep until input, waking early for a running write's progress or
@@ -406,7 +414,8 @@ impl ApplicationHandler for Host {
         if self.app.busy() || self.app.pending() {
             // A write's progress, or an image or drive list being read in
             // the background, arrives with no input event: look again soon.
-            wake = Some(wake.map_or(0.05, |t| t.min(0.05)));
+            let next = (1.0 / JOB_FPS - since).clamp(0.0, 0.05);
+            wake = Some(wake.map_or(next, |t| t.min(next)));
         } else if self.app.settings.auto_refresh {
             // Often enough that a new drive appears promptly; this is a
             // channel check, not a disk listing.
@@ -420,6 +429,9 @@ impl ApplicationHandler for Host {
         });
     }
 }
+
+/// How often the window redraws while a job runs and nothing else changes.
+const JOB_FPS: f32 = 10.0;
 
 fn main() -> ExitCode {
     // A command means the terminal; none means the window. (Old macOS adds a
