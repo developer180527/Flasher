@@ -971,3 +971,134 @@ fn shows_the_drives_serial_number() {
     h.click("flash").unwrap();
     snap(&mut h, "serial-confirm");
 }
+
+// ---- verify image -----------------------------------------------------
+
+fn sha256_of(path: &Path) -> String {
+    use std::sync::atomic::AtomicBool;
+    libflasher::checksum::sha256_file(path, 0, &AtomicBool::new(false), &mut |_| {}).unwrap()
+}
+
+#[test]
+fn verify_image_checks_the_checksum_without_a_drive() {
+    let f = Fixture::new("verify_image_ok");
+    let (img, _) = f.image("distro.iso", MB, true);
+    let mut h = f.app();
+    assert!(h.app.devices().is_empty());
+    h.drop_file(&img);
+    h.app.set_sha256(&sha256_of(&img));
+    h.click("verify_image").unwrap();
+    h.wait_until_idle(Duration::from_secs(30)).unwrap();
+    snap(&mut h, "verify-image-ok");
+    let outcome = h.app.outcome().unwrap();
+    assert!(
+        outcome.as_ref().is_ok_and(|m| m.starts_with("Verified:")
+            && m.contains("matched the SHA-256 you gave")
+            && m.contains("Nothing was written")),
+        "{outcome:?}"
+    );
+    assert!(h.control("copy_sha256").is_none(), "nothing new to copy");
+}
+
+#[test]
+fn verify_image_never_touches_the_drive() {
+    let f = Fixture::new("verify_image_bad");
+    let drive = f.drive("stick", 8 * MB);
+    let (img, _) = f.image("distro.iso", MB, true);
+    let mut h = f.app();
+    h.drop_file(&img);
+    h.app.set_sha256(&"ab".repeat(32));
+    h.click("verify_image").unwrap();
+    assert!(h.control("confirm").is_none(), "asked to erase for a check");
+    h.wait_until_idle(Duration::from_secs(30)).unwrap();
+    let outcome = h.app.outcome().unwrap();
+    assert!(
+        outcome
+            .as_ref()
+            .is_err_and(|e| e.contains("does not match")),
+        "{outcome:?}"
+    );
+    assert!(
+        std::fs::read(&drive).unwrap().iter().all(|&b| b == 0xEE),
+        "drive was written"
+    );
+}
+
+#[test]
+fn verify_image_without_a_checksum_shows_one_to_copy() {
+    let f = Fixture::new("verify_image_none");
+    let (img, _) = f.image("distro.iso", MB, true);
+    let hash = sha256_of(&img);
+    let mut h = f.app();
+    h.drop_file(&img);
+    h.click("verify_image").unwrap();
+    h.wait_until_idle(Duration::from_secs(30)).unwrap();
+    h.info.screen_size.x = 520.0;
+    snap(&mut h, "verify-image-hash");
+    let outcome = h.app.outcome().unwrap();
+    let grouped = format!(
+        "{} {} {} {}",
+        &hash[..16],
+        &hash[16..32],
+        &hash[32..48],
+        &hash[48..]
+    );
+    assert!(
+        outcome.as_ref().is_ok_and(|m| m.contains(&grouped)),
+        "{outcome:?}"
+    );
+    h.click("copy_sha256").unwrap();
+    assert_eq!(h.app.want_copy.take().as_deref(), Some(hash.as_str()));
+    // The next job forgets it.
+    h.click("ok").unwrap();
+    h.app.set_sha256(&hash);
+    h.click("verify_image").unwrap();
+    h.wait_until_idle(Duration::from_secs(30)).unwrap();
+    assert!(h.control("copy_sha256").is_none());
+}
+
+#[test]
+fn verify_image_needs_a_usable_checksum() {
+    let f = Fixture::new("verify_image_malformed");
+    let (img, _) = f.image("distro.iso", MB, true);
+    let mut h = f.app();
+    h.drop_file(&img);
+    h.app.set_sha256("not-a-hash");
+    h.click("verify_image").unwrap();
+    assert!(!h.app.busy(), "checked against an unusable checksum");
+}
+
+/// Every line fits the window: at the narrowest width, the tab page's own
+/// right margin (between the controls' edge and the page's border) stays
+/// bare, row by row. A line that does not wrap runs through it and is cut
+/// off at the border (a found checksum's note, an ISO's details).
+#[test]
+fn text_wraps_instead_of_running_off_the_window() {
+    let f = Fixture::new("wraps");
+    f.drive("stick", 8 * MB);
+    let (img, _) = f.image("distro.iso", MB, true);
+    std::fs::write(
+        f.dir.join("SHA256SUMS"),
+        format!("{}  distro.iso\n", sha256_of(&img)),
+    )
+    .unwrap();
+    let mut h = f.app();
+    h.drop_file(&img);
+    h.info.screen_size.x = 520.0;
+    h.frames(3);
+    snap(&mut h, "narrow-wrapped");
+    let refresh = h.control("refresh").unwrap();
+    let flash = h.control("flash").unwrap();
+    let (w, _, px) = h.render();
+    let at = |x: u32, y: u32| {
+        let i = ((y * w + x) * 4) as usize;
+        [px[i], px[i + 1], px[i + 2]]
+    };
+    let edge = (refresh.x + refresh.w).ceil() as u32;
+    for y in refresh.y as u32..(flash.y - 24.0) as u32 {
+        let first = at(edge + 3, y);
+        for x in edge + 3..edge + 12 {
+            assert_eq!(at(x, y), first, "text in the page's margin at ({x}, {y})");
+        }
+    }
+}

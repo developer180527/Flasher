@@ -173,12 +173,17 @@ pub struct App {
     /// The window was asked to close while a job ran: it closes when the
     /// job ends (see [`App::request_close`]).
     closing: bool,
+    /// The SHA-256 the last "Verify image" computed, when no checksum was
+    /// given to compare it with: offered for copying.
+    computed_sha256: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Task {
     Flash,
     Restore,
+    /// Hash the image, against the checksum if one was given. No drive.
+    Check,
 }
 
 enum Stage {
@@ -205,6 +210,8 @@ struct Job {
     last_heard: Instant,
     /// The phase last logged, so the log gets one line per phase.
     phase: &'static str,
+    /// What a check computed, kept for the finished view.
+    hashed: Option<String>,
 }
 
 /// What reading an image in the background found.
@@ -216,6 +223,8 @@ struct Loaded {
 
 enum Msg {
     Progress(Progress),
+    /// The image's SHA-256, from a check, to offer for copying.
+    Hashed(String),
     /// The outcome, and a warning to show alongside a success.
     Done(Result<String, String>, Option<String>),
 }
@@ -257,6 +266,7 @@ impl App {
             store: None,
             controls: Vec::new(),
             closing: false,
+            computed_sha256: None,
         };
         app.refresh();
         app.set_auto_refresh(true);
@@ -316,7 +326,8 @@ impl App {
         let Stage::Running(job) = &self.stage else {
             return true;
         };
-        if self.closing {
+        // A check touches no drive: nothing to wait for.
+        if self.closing || job.task == Task::Check {
             return true;
         }
         self.closing = true;
@@ -588,6 +599,9 @@ impl App {
     }
 
     fn start(&mut self, task: Task) {
+        if task == Task::Check {
+            return self.start_check();
+        }
         let Some(device) = self.devices.get(self.selected).cloned() else {
             return;
         };
@@ -706,8 +720,14 @@ impl App {
                     let _ = tx.send(Msg::Done(result.map_err(|e| e.to_string()), None));
                 });
             }
+            Task::Check => unreachable!("handled above"),
         }
+        self.run(task, rx, cancel);
+    }
 
+    /// Show a job as running.
+    fn run(&mut self, task: Task, rx: Receiver<Msg>, cancel: Arc<AtomicBool>) {
+        self.computed_sha256 = None;
         self.stage = Stage::Running(Job {
             task,
             rx,
@@ -717,7 +737,80 @@ impl App {
             started: Instant::now(),
             last_heard: Instant::now(),
             phase: "",
+            hashed: None,
         });
+    }
+
+    /// Whether "Verify image" can run: an image is loaded, and the checksum
+    /// box is empty or holds a SHA-256. It hashes any image that opened,
+    /// even one Flasher cannot write.
+    fn can_check(&self) -> bool {
+        matches!(self.image, Some(Ok(_)))
+            && (self.sha256.trim().is_empty() || checksum::normalize(&self.sha256).is_some())
+    }
+
+    /// Hash the image, nothing else: no drive, no password. Against the
+    /// checksum box whatever the Options tab says, since this was asked for.
+    fn start_check(&mut self) {
+        let Some(Ok(image)) = self.image.clone() else {
+            return;
+        };
+        let expected = checksum::normalize(&self.sha256);
+        let found_in = self.sha256_source.clone();
+        self.last_job = vec![
+            ("Task", "Verify image".into()),
+            ("Image", image.path.display().to_string()),
+            (
+                "Checksum",
+                match (&expected, &found_in) {
+                    (None, _) => "none".into(),
+                    (Some(_), Some(src)) => format!("from {src}"),
+                    (Some(_), None) => "typed".into(),
+                },
+            ),
+        ];
+        journal::line(format_args!(
+            "start: {}",
+            self.last_job
+                .iter()
+                .map(|(k, v)| format!("{k} {v}"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let stop = cancel.clone();
+        thread::spawn(move || {
+            let mut send = |p| {
+                let _ = tx.send(Msg::Progress(p));
+            };
+            let result = match &expected {
+                Some(h) => checksum::verify_image(&image, h, &stop, &mut send).map(|()| {
+                    format!(
+                        "Verified: {}. Nothing was written.",
+                        flasher_cli::checksum_matched(found_in.as_deref())
+                    )
+                }),
+                None => checksum::sha256_file(&image.path, image.file_size, &stop, &mut send).map(
+                    |hash| {
+                        let _ = tx.send(Msg::Hashed(hash.clone()));
+                        // In groups, on a line of its own: easier to compare by
+                        // eye, and it wraps between groups in a narrow window.
+                        let groups: Vec<&str> = (0..hash.len())
+                            .step_by(16)
+                            .map(|i| &hash[i..(i + 16).min(hash.len())])
+                            .collect();
+                        format!(
+                            "The image's SHA-256 is\n{}\nCompare it with the one on the download \
+                             page, or paste that one above to have it compared for you.",
+                            groups.join(" ")
+                        )
+                    },
+                ),
+            };
+            let _ = tx.send(Msg::Done(result.map_err(|e| e.to_string()), None));
+        });
+        self.run(Task::Check, rx, cancel);
     }
 
     /// Drain the worker's messages. Returns true if any arrived.
@@ -739,6 +832,10 @@ impl App {
                         job.phase = phase;
                     }
                 }
+                Ok(Msg::Hashed(h)) => {
+                    journal::line(format_args!("sha256: {h}"));
+                    job.hashed = Some(h);
+                }
                 Ok(Msg::Done(r, warning)) => {
                     match &r {
                         Ok(msg) => journal::line(format_args!("finished: {msg}")),
@@ -747,7 +844,9 @@ impl App {
                     if let Some(w) = &warning {
                         journal::line(format_args!("warning: {w}"));
                     }
+                    let hashed = job.hashed.take();
                     self.stage = Stage::Finished(r, warning);
+                    self.computed_sha256 = hashed;
                     self.refresh();
                     return true;
                 }
@@ -847,7 +946,7 @@ impl App {
         ui.section("Drive");
         ui.row(|ui| {
             if self.devices.is_empty() {
-                ui.label_muted("No removable drives found. Plug one in.");
+                note(ui, "No removable drives found. Plug one in.");
             } else {
                 let names: Vec<&str> = self.device_names.iter().map(String::as_str).collect();
                 let r = ui.combo("drive", &mut self.selected, &names);
@@ -898,8 +997,8 @@ impl App {
             }
         });
         match &self.image {
-            None if self.loading.is_some() => ui.label_muted("Reading the image…"),
-            None => ui.label_muted("Choose a file, or drop one on the window."),
+            None if self.loading.is_some() => note(ui, "Reading the image…"),
+            None => note(ui, "Choose a file, or drop one on the window."),
             Some(Err(e)) => error(ui, e),
             Some(Ok(i)) => {
                 let size = match i.disk_size {
@@ -914,22 +1013,26 @@ impl App {
                     c => format!("{} · {size} · {} compressed", i.kind.describe(), c.name()),
                 };
                 match &self.extract_plan {
-                    None if i.kind.raw_writable() => ui.label_muted(&line),
+                    None if i.kind.raw_writable() => note(ui, &line),
                     None => error(ui, &line),
                     Some(Ok(p)) => {
                         let split = p
                             .wim_parts
                             .map(|n| format!(" · install.wim split into {n} parts for FAT32"))
                             .unwrap_or_default();
-                        ui.label_muted(&format!(
-                            "{line} · {} files, {} · volume \"{}\"{split}",
-                            p.files,
-                            human_size(p.bytes),
-                            p.label
-                        ))
+                        note(
+                            ui,
+                            &format!(
+                                "{} · {} files, {} · volume \"{}\"{split}",
+                                i.kind.describe(),
+                                p.files,
+                                human_size(p.bytes),
+                                p.label
+                            ),
+                        )
                     }
                     Some(Err(e)) => {
-                        ui.label_muted(&line);
+                        note(ui, &line);
                         error(ui, &format!("Cannot extract this ISO: {e}."));
                     }
                 }
@@ -948,20 +1051,25 @@ impl App {
         }
         match (self.expected_sha256(), &self.sha256_source) {
             (Err(e), _) => error(ui, &e),
-            (Ok(Some(_)), Some(src)) => ui.label_muted(&format!(
-                "Found in {src} next to the image and checked before writing. That shows the \
+            (Ok(Some(_)), Some(src)) => note(
+                ui,
+                &format!(
+                    "Found in {src} next to the image and checked before writing. That shows the \
                  download is intact; to know it is genuine, use the checksum from the \
                  publisher's website instead."
-            )),
-            (Ok(Some(_)), None) => {
-                ui.label_muted("The image is checked against this before anything is written.")
-            }
+                ),
+            ),
+            (Ok(Some(_)), None) => note(
+                ui,
+                "The image is checked against this before anything is written.",
+            ),
             (Ok(None), _) if !self.settings.check_sha256 => {
-                ui.label_muted("Checking is turned off on the Options tab.")
+                note(ui, "Checking is turned off on the Options tab.")
             }
-            (Ok(None), _) => {
-                ui.label_muted("Without one, a damaged or tampered download cannot be detected.")
-            }
+            (Ok(None), _) => note(
+                ui,
+                "Without one, a damaged or tampered download cannot be detected.",
+            ),
         }
     }
 
@@ -975,7 +1083,7 @@ impl App {
         let r = ui.text_input("label", &mut self.label, "USB DRIVE");
         self.controls.push(("label", r.response.rect));
         match volume_label(&self.label) {
-            Ok(_) => ui.label_muted("Up to 11 letters, digits, spaces, - or _."),
+            Ok(_) => note(ui, "Up to 11 letters, digits, spaces, - or _."),
             Err(e) => error(ui, &format!("{}{}", e[..1].to_uppercase(), &e[1..])),
         }
     }
@@ -1013,13 +1121,16 @@ impl App {
             let r = ui.segmented("theme", &mut i, &ThemeChoice::LABELS);
             self.controls.push(("theme", r.rect));
             self.settings.theme = ThemeChoice::ALL[i];
-            ui.label_muted("System follows your computer's light or dark setting.");
+            note(ui, "System follows your computer's light or dark setting.");
         });
-        ui.label_muted(&format!(
-            "Flasher {} · {} drives",
-            env!("CARGO_PKG_VERSION"),
-            self.platform.name()
-        ));
+        note(
+            ui,
+            &format!(
+                "Flasher {} · {} drives",
+                env!("CARGO_PKG_VERSION"),
+                self.platform.name()
+            ),
+        );
     }
 
     /// What the confirmation says beyond "everything will be erased": the
@@ -1034,7 +1145,7 @@ impl App {
         };
         let image = match task {
             Task::Flash => self.ready_image(),
-            Task::Restore => None,
+            Task::Restore | Task::Check => None,
         };
         flasher_cli::erase_warnings(device, image)
     }
@@ -1044,6 +1155,7 @@ impl App {
         match task {
             Task::Flash => drive && self.ready_image().is_some() && self.expected_sha256().is_ok(),
             Task::Restore => drive && volume_label(&self.label).is_ok(),
+            Task::Check => self.can_check(),
         }
     }
 
@@ -1060,11 +1172,23 @@ impl App {
                     _ => return,
                 };
                 let ok = self.can_start(task);
+                let check = task == Task::Flash && self.can_start(Task::Check);
                 button_row(ui, "idle", |ui| {
+                    if task == Task::Flash {
+                        // Only reads the image: no drive, no password.
+                        ui.enabled(check, |ui| {
+                            let r = ui.button("Verify image");
+                            self.controls.push(("verify_image", r.rect));
+                            if r.clicked {
+                                self.start(Task::Check);
+                            }
+                        });
+                    }
                     ui.enabled(ok, |ui| {
                         let (label, name) = match task {
                             Task::Flash => ("Flash", "flash"),
                             Task::Restore => ("Restore drive…", "restore"),
+                            Task::Check => unreachable!(),
                         };
                         let r = ui.button_primary(label);
                         self.controls.push((name, r.rect));
@@ -1090,7 +1214,7 @@ impl App {
                 for w in self.confirm_warnings() {
                     warning(ui, &w);
                 }
-                ui.label_muted(
+                note(ui,
                     "A failing drive can freeze your computer while it is written. Save your work first.",
                 );
                 let unknown = task == Task::Flash
@@ -1108,6 +1232,7 @@ impl App {
                         Task::Flash if unknown => "Erase and flash anyway",
                         Task::Flash => "Erase and flash",
                         Task::Restore => "Erase and restore",
+                        Task::Check => unreachable!(),
                     };
                     let r = ui.button_primary(label);
                     self.controls.push(("confirm", r.rect));
@@ -1121,6 +1246,8 @@ impl App {
                 let text = match (job.task, job.heard) {
                     (Task::Restore, _) => format!("Erasing and formatting the drive… {elapsed}"),
                     (Task::Flash, true) => job.status.text(),
+                    (Task::Check, true) => job.status.text(),
+                    (Task::Check, false) => format!("Reading the image… {elapsed}"),
                     (Task::Flash, false) => {
                         format!("Waiting for your password, then unmounting the drive… {elapsed}")
                     }
@@ -1162,11 +1289,12 @@ impl App {
                         match job.task {
                             Task::Flash => "Stopping the write; the window closes when it has stopped. Close it again to quit at once and leave the drive half-written.",
                             Task::Restore => "The window closes when the drive is finished. Close it again to quit at once and leave the drive unusable.",
+                            Task::Check => "Stopping the check.",
                         },
                     );
                 }
                 // Restoring is one OS command; there is nothing safe to stop.
-                if job.task == Task::Flash {
+                if job.task != Task::Restore {
                     let stopping = job.cancel.load(Ordering::Relaxed);
                     button_row(ui, "running", |ui| {
                         ui.enabled(!stopping, |ui| {
@@ -1184,7 +1312,13 @@ impl App {
                 match result {
                     Ok(msg) => {
                         let size = ui.theme.metrics.font_size;
-                        ui.paragraph_with(msg, size, success_color(dark), Align::Start);
+                        // A hash with nothing to compare it to is news, not success.
+                        let ink = if self.computed_sha256.is_some() {
+                            ui.theme.palette.text
+                        } else {
+                            success_color(dark)
+                        };
+                        ui.paragraph_with(msg, size, ink, Align::Start);
                     }
                     Err(e) => error(ui, e),
                 }
@@ -1195,6 +1329,13 @@ impl App {
                 button_row(ui, "finished", |ui| {
                     // Something to paste into a bug report: the error, what
                     // the job was given, and the log leading up to it.
+                    if let Some(h) = &self.computed_sha256 {
+                        let r = ui.button("Copy SHA-256");
+                        self.controls.push(("copy_sha256", r.rect));
+                        if r.clicked {
+                            self.want_copy = Some(h.clone());
+                        }
+                    }
                     if let Some(e) = &failure {
                         let r = ui.button("Copy details");
                         self.controls.push(("copy_details", r.rect));
@@ -1231,6 +1372,13 @@ fn button_row<R>(ui: &mut Ui, key: &str, body: impl FnOnce(&mut Ui) -> R) -> R {
 fn error(ui: &mut Ui, text: &str) {
     let (size, color) = (ui.theme.metrics.font_size, ui.theme.palette.danger);
     // Wrapped: error messages are sentences, and the window can be narrow.
+    ui.paragraph_with(text, size, color, Align::Start);
+}
+
+/// Secondary text, wrapped to the window's width: file details and hints
+/// run long, and the window can be narrow.
+fn note(ui: &mut Ui, text: &str) {
+    let (size, color) = (ui.theme.metrics.font_size, ui.theme.palette.text_muted);
     ui.paragraph_with(text, size, color, Align::Start);
 }
 

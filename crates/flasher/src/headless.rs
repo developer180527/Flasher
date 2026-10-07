@@ -152,8 +152,9 @@ impl Headless {
         Ok(())
     }
 
-    /// Render the current UI to a PNG with the CPU reference renderer.
-    pub fn snapshot(&mut self, path: &Path) -> std::io::Result<()> {
+    /// Render the current UI with the CPU reference renderer: width, height
+    /// and RGBA pixels, row by row.
+    pub fn render(&mut self) -> (u32, u32, Vec<u8>) {
         self.frame();
         self.ui.begin_frame(self.info);
         self.app.ui(&mut self.ui);
@@ -163,11 +164,17 @@ impl Headless {
             (self.info.screen_size.y * self.info.scale) as u32,
         );
         let img = libgui_soft::SoftRenderer::new().render_to_image(&out, w, h);
+        (img.width, img.height, img.data)
+    }
+
+    /// Render the current UI to a PNG with the CPU reference renderer.
+    pub fn snapshot(&mut self, path: &Path) -> std::io::Result<()> {
+        let (width, height, data) = self.render();
         let file = std::io::BufWriter::new(std::fs::File::create(path)?);
-        let mut enc = png::Encoder::new(file, img.width, img.height);
+        let mut enc = png::Encoder::new(file, width, height);
         enc.set_color(png::ColorType::Rgba);
         enc.set_depth(png::BitDepth::Eight);
-        enc.write_header()?.write_image_data(&img.data)?;
+        enc.write_header()?.write_image_data(&data)?;
         Ok(())
     }
 }
