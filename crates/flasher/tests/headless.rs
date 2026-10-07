@@ -255,6 +255,15 @@ fn refuses_a_different_drive_that_took_the_same_path() {
     let drive = f.drive("stick", 8 * MB);
     let (img, _) = f.image("distro.iso", MB, true);
     let mut h = f.app();
+    // This tests the check made when the drive is opened. With the drive
+    // list updating itself, the swap below can instead withdraw the
+    // confirmation first (also safe, and tested by
+    // a_confirmation_is_withdrawn_when_its_drive_goes); which one wins is a
+    // race, so the list is held still here.
+    h.click("tab:options").unwrap();
+    h.click("auto_refresh").unwrap();
+    assert!(!h.app.settings.auto_refresh);
+    h.click("tab:flash").unwrap();
     h.drop_file(&img);
     h.click("flash").unwrap();
     // While the confirmation is up, the stick is swapped for another disk
